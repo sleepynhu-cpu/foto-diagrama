@@ -147,6 +147,9 @@ table { border-collapse: collapse; width: 100%; font-size: 14px; }
 th, td { border: 1px solid var(--borda); padding: 4px 6px; text-align: left; vertical-align: top; }
 th { background: var(--bg); position: sticky; top: 0; }
 #tabela-itens input { margin: 0; padding: 5px; border-radius: 4px; }
+#tabela-itens tr.conferir td { background: var(--mudou); }
+#n-conferir { margin: 0 0 6px; }
+#n-conferir:empty { display: none; }
 #tabela-itens td:nth-child(1) { width: 90px; }
 #tabela-itens td:nth-child(3) { width: 70px; }
 #tabela-itens td:last-child { width: 40px; }

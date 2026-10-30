@@ -619,18 +619,34 @@ $('#e-colar').onclick = async () => {
   catch { $('#e-texto').focus(); aviso('Toque e segure na caixa e escolha Colar.'); }
 };
 $('#e-ok').onclick = () => {
-  const certos = parseTexto($('#e-texto').value);
-  if (!certos.length) return aviso('Não achei itens no texto certo (ex: F1 10A Luz de freio).');
+  const r = ensinarCom($('#e-texto').value);
+  if (!r) return aviso('Não achei itens no texto certo (ex: F1 10A Luz de freio).');
+  $('#e-resultado').innerHTML = r.html;
+};
+
+// Quantos códigos do texto certo batem com itens que o leitor leu (e ainda não foram salvos).
+function sobreposicao(texto) {
+  const lidos = new Set(lerTabela().filter(i => i.lido).map(i => i.codigo));
+  const certos = parseTexto(texto);
+  return { certos: certos.length, batem: certos.filter(c => lidos.has(c.codigo)).length };
+}
+
+// Compara o que foi lido com o texto certo, aprende os erros e deixa a tabela com o texto certo.
+function ensinarCom(texto) {
+  const certos = parseTexto(texto);
+  if (!certos.length) return null;
   const tabela = lerTabela().filter(i => i.codigo || i.descricao);
 
-  // junta cada item lido com o certo: primeiro pelo código, depois os que sobraram pela ordem
+  // junta cada item lido com o certo: primeiro pelo código; os que sobraram, pela ordem,
+  // só se sobrou a mesma quantidade dos dois lados (senão seriam itens de outra foto)
   const pares = new Map();
   for (const c of certos) {
     const t = tabela.find(x => x.codigo === c.codigo && ![...pares.values()].includes(x));
     if (t) pares.set(c, t);
   }
-  const sobram = tabela.filter(x => ![...pares.values()].includes(x));
-  certos.filter(c => !pares.has(c)).forEach((c, k) => { if (sobram[k]) pares.set(c, sobram[k]); });
+  const sobram = tabela.filter(x => x.lido && ![...pares.values()].includes(x));
+  const semPar = certos.filter(c => !pares.has(c));
+  if (sobram.length === semPar.length) semPar.forEach((c, k) => pares.set(c, sobram[k]));
 
   let sozinho = 0, comAprendizado = 0, aprendeu = 0;
   const erros = [];
@@ -655,16 +671,41 @@ $('#e-ok').onclick = () => {
   }
   gravarAprendizado();
 
-  // a tabela fica com o texto certo (mantendo as posições na caixa que já tinham sido marcadas)
-  renderTabela(certos.map(c => ({ ...c, posicao: pares.get(c)?.posicao })));
+  // a tabela fica com o texto certo (mantendo as posições na caixa já marcadas);
+  // itens de outras fotos que não estavam nesse texto continuam lá
+  const usados = new Set(pares.values());
+  renderTabela([
+    ...tabela.filter(t => !usados.has(t) && !certos.some(c => c.codigo === t.codigo)),
+    ...certos.map(c => ({ ...c, posicao: pares.get(c)?.posicao }))
+  ].sort((a, b) => ordemCodigo(a.codigo, b.codigo)));
 
   const total = certos.length;
-  $('#e-resultado').innerHTML = `
+  const placar = `O leitor acertou ${sozinho} de ${total} sozinho` + (comAprendizado > sozinho ? ` (com o aprendizado, ${comAprendizado})` : '');
+  return {
+    placar, aprendeu,
+    html: `
     <p class="placar">O leitor acertou <b>${sozinho} de ${total}</b> sozinho` +
-    (comAprendizado > sozinho ? ` · com o aprendizado, <b>${comAprendizado} de ${total}</b>` : '') + `.</p>
+      (comAprendizado > sozinho ? ` · com o aprendizado, <b>${comAprendizado} de ${total}</b>` : '') + `.</p>
     <p class="dica">🧠 Aprendi ${aprendeu} correç${aprendeu === 1 ? 'ão' : 'ões'}. A tabela agora está com o texto certo.</p>
-    ${erros.length ? `<ul>${erros.join('')}</ul>` : '<p>Nenhum erro! 🎉</p>'}`;
-};
+    ${erros.length ? `<ul>${erros.join('')}</ul>` : '<p>Nenhum erro! 🎉</p>'}`
+  };
+}
+
+// Texto que vem de fora (Lens ou colado). Se ele bate com uma foto que o leitor acabou de ler,
+// é o "texto certo" dessa foto: ensina automaticamente. Senão, só converte.
+function receberTexto(txt) {
+  const s = sobreposicao(txt);
+  if (s.batem >= 2 && s.batem >= s.certos * 0.4) {
+    const r = ensinarCom(txt);
+    $('#e-texto').value = txt;
+    $('#e-resultado').innerHTML = `<p class="dica">Recebi o texto certo da foto que você leu e comparei sozinho:</p>` + r.html;
+    $('#ensinar').hidden = false;
+    document.body.style.overflow = 'hidden';
+    return;
+  }
+  acrescentarTexto(txt);
+  converterTexto(txt);
+}
 
 // Ao salvar: o que mudou entre o que foi lido e o que ficou na tabela vira correção aprendida.
 function aprenderCorrecoes(itens) {
@@ -687,8 +728,7 @@ $('#b-colar').onclick = async () => {
   try {
     const txt = await navigator.clipboard.readText();
     if (!txt.trim()) return aviso('A área de transferência está vazia.');
-    acrescentarTexto(txt);
-    converterTexto(txt);
+    receberTexto(txt);
   } catch {
     $('#f-texto').focus();
     aviso('Toque e segure na caixa de texto e escolha Colar.');
@@ -702,10 +742,41 @@ function receberCompartilhado() {
   if (!txt.trim()) return;
   history.replaceState(null, '', location.pathname); // limpa a URL para não repetir ao recarregar
   abrirAba('novo');
-  acrescentarTexto(txt);
-  converterTexto(txt);
-  $('#f-texto').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  receberTexto(txt);
+  $('#tabela-itens').scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
+
+// ---------- rascunho ----------
+// Compartilhar do Lens reabre o app; o rascunho (só texto: campos, texto lido e tabela) mantém
+// o que você estava fazendo. As fotos não são guardadas, então leia antes de ir para o Lens.
+const CHAVE_RASCUNHO = 'rascunho-v1';
+let timerRascunho = null;
+function agendarRascunho() {
+  clearTimeout(timerRascunho);
+  timerRascunho = setTimeout(salvarRascunho, 300);
+}
+function salvarRascunho() {
+  const itens = lerTabela().filter(i => i.codigo || i.descricao);
+  const texto = $('#f-texto').value;
+  try {
+    if (!itens.length && !texto.trim()) return localStorage.removeItem(CHAVE_RASCUNHO);
+    const campos = Object.fromEntries(CAMPOS.map(c => [c, $('#f-' + c).value]));
+    localStorage.setItem(CHAVE_RASCUNHO, JSON.stringify({ campos, texto, itens, layout: lerLayout(), editandoId }));
+  } catch {}
+}
+function restaurarRascunho() {
+  let r = null;
+  try { r = JSON.parse(localStorage.getItem(CHAVE_RASCUNHO)); } catch {}
+  if (!r) return;
+  CAMPOS.forEach(c => { if (r.campos?.[c] != null) $('#f-' + c).value = r.campos[c]; });
+  $('#f-texto').value = r.texto || '';
+  definirLayout(r.layout);
+  editandoId = r.editandoId || null;
+  if (editandoId) $('#titulo-form').textContent = `Editando: ${r.campos.modelo} ${r.campos.ano}`;
+  renderTabela(r.itens || []);
+}
+$('#tab-novo').addEventListener('input', agendarRascunho);
+$('#tab-novo').addEventListener('change', agendarRascunho);
 
 // ---------- tabela de itens ----------
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -725,9 +796,46 @@ function linhaTabela(i = {}) {
 function renderTabela(itens) {
   const tb = $('#tabela-itens tbody');
   tb.innerHTML = '';
-  itens.forEach(i => tb.appendChild(linhaTabela(i)));
+  const ctx = contextoAprendizado();
+  itens.forEach(i => {
+    const tr = linhaTabela(i);
+    marcarConferir(tr, i, ctx);
+    tb.appendChild(tr);
+  });
+  contarConferir();
   renderPosicoes();
+  agendarRascunho();
 }
+
+// Amarelo = vale a pena olhar. O resto o app considera confiável.
+function motivosConferir(i, ctx) {
+  const m = [];
+  if (!i.codigo || i.codigo.endsWith('?') || !/\d/.test(i.codigo)) m.push('código incerto');
+  if (!i.amperagem) m.push('sem amperagem');
+  else if (!AMPS_PADRAO.includes(Number(i.amperagem))) m.push(`amperagem ${i.amperagem}A não existe`);
+  if (!i.descricao) m.push('sem descrição');
+  else {
+    const estranhas = palavrasDe(i.descricao).filter(p => p.length >= 3 && !ctx.voc.has(p) && !/\d/.test(p));
+    if (estranhas.length) m.push('palavra estranha: ' + estranhas.join(', '));
+  }
+  if (i.obs?.startsWith('🧠')) m.push('corrigido automaticamente');
+  else if (/conferir/.test(i.obs || '')) m.push(i.obs);
+  return m;
+}
+function marcarConferir(tr, i, ctx) {
+  const m = motivosConferir(i, ctx);
+  tr.classList.toggle('conferir', m.length > 0);
+  tr.title = m.length ? 'Conferir: ' + m.join(' · ') : '';
+}
+function contarConferir() {
+  const n = document.querySelectorAll('#tabela-itens tbody tr.conferir').length;
+  $('#n-conferir').textContent = n ? `⚠ ${n} para conferir (em amarelo). Ao mexer na linha ela sai do amarelo.` : '';
+}
+// mexeu na linha = conferiu
+$('#tabela-itens tbody').addEventListener('input', e => {
+  const tr = e.target.closest('tr');
+  if (tr?.classList.contains('conferir')) { tr.classList.remove('conferir'); tr.title = ''; contarConferir(); }
+});
 function lerTabela() {
   return [...document.querySelectorAll('#tabela-itens tbody tr')].map(tr => {
     const o = {};
@@ -1364,4 +1472,5 @@ document.body.classList.toggle('fixado', fixado());
 atualizarSugestoes();
 renderAnosVeiculo();
 renderPosicoes();
+restaurarRascunho();
 receberCompartilhado();
