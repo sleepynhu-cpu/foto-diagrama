@@ -64,18 +64,23 @@ function renderFotos() {
 // Manda a foto (já girada e recortada, colorida) para o compartilhar do Android → Google Lens.
 // No Lens: selecione o texto → Compartilhar → Diagramas; se esta foto já foi lida pelo app,
 // ele compara e aprende sozinho. (Só a foto vai para o Google, e só quando você toca aqui.)
+// Foto girada e recortada, colorida, como JPEG (para o Lens e para a IA do PC).
+async function recorteColorido(foto, maximo = 2000) {
+  const img = await createImageBitmap(foto.arquivo);
+  const girada = girar(img, foto.giro || 0, foto.inclinacao || 0);
+  const r = foto.recorte || { x: 0, y: 0, w: 1, h: 1 };
+  const sw = r.w * girada.width, sh = r.h * girada.height;
+  const esc = Math.min(1, maximo / Math.max(sw, sh));
+  const c = document.createElement('canvas');
+  c.width = Math.round(sw * esc);
+  c.height = Math.round(sh * esc);
+  c.getContext('2d').drawImage(girada, r.x * girada.width, r.y * girada.height, sw, sh, 0, 0, c.width, c.height);
+  return new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.9));
+}
+
 async function mandarParaLens(foto) {
   try {
-    const img = await createImageBitmap(foto.arquivo);
-    const girada = girar(img, foto.giro || 0, foto.inclinacao || 0);
-    const r = foto.recorte || { x: 0, y: 0, w: 1, h: 1 };
-    const sw = r.w * girada.width, sh = r.h * girada.height;
-    const esc = Math.min(1, 2000 / Math.max(sw, sh));
-    const c = document.createElement('canvas');
-    c.width = Math.round(sw * esc);
-    c.height = Math.round(sh * esc);
-    c.getContext('2d').drawImage(girada, r.x * girada.width, r.y * girada.height, sw, sh, 0, 0, c.width, c.height);
-    const blob = await new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.9));
+    const blob = await recorteColorido(foto);
     const arquivo = new File([blob], 'tabela.jpg', { type: 'image/jpeg' });
     if (!navigator.canShare?.({ files: [arquivo] })) return aviso('Este navegador não deixa compartilhar imagem. Use pelo celular.');
     if (!foto.lida) aviso('Dica: espere o ✔ da leitura para o app poder aprender com o texto do Lens.');
@@ -328,6 +333,7 @@ function pontuar(linhas) {
 
 // Automático: tenta cinza e preto-e-branco em modos diferentes e fica com a leitura que achou mais códigos.
 async function lerFoto(worker, foto, modo, manterDuvidosas, progresso) {
+  if (modo === 'ollama') { progresso(1, 1); return lerComOllama(foto); }
   const cinza = await prepararImagem(foto);
   const tentativas = modo === 'auto'
     ? [['4', () => binarizar(cinza)], ['6', () => cinza], ['11', () => binarizar(cinza)]]
@@ -343,6 +349,70 @@ async function lerFoto(worker, foto, modo, manterDuvidosas, progresso) {
   return melhor.linhas.map(l => l.texto).join('\n');
 }
 
+// ---------- IA do PC (Ollama) ----------
+// Só no computador onde o Ollama está rodando: a foto vai para http://localhost:11434 (não sai do PC).
+// A IA devolve os itens já separados; viram texto "F1 10A Luz de freio" e seguem o mesmo caminho
+// (conversão, aprendizado, amarelo de conferir).
+const OLLAMA = 'http://localhost:11434';
+const MODELO_IA = 'qwen2.5vl:7b';
+const PROMPT_IA = `Esta é a foto de uma tabela de fusíveis/relés de um veículo, com as colunas: fusível (código), amperagem e descrição.
+Transcreva TODAS as linhas da tabela, de cima para baixo, exatamente como estão escritas (mantenha acentos).
+- codigo: o código do fusível/relé, ex: F1, FB2, SB3, R1
+- amperagem: só o número, ex: 10, 7.5, 30 (vazio se não houver)
+- descricao: o texto da descrição, sem a amperagem
+Ignore o cabeçalho da tabela.`;
+const ESQUEMA_IA = {
+  type: 'object',
+  properties: {
+    itens: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { codigo: { type: 'string' }, amperagem: { type: 'string' }, descricao: { type: 'string' } },
+        required: ['codigo', 'amperagem', 'descricao']
+      }
+    }
+  },
+  required: ['itens']
+};
+
+async function ollamaDisponivel() {
+  try {
+    const r = await fetch(OLLAMA + '/api/tags', { signal: AbortSignal.timeout(1500) });
+    const { models = [] } = await r.json();
+    return models.some(m => m.name.startsWith(MODELO_IA));
+  } catch { return false; }
+}
+
+async function lerComOllama(foto) {
+  const blob = await recorteColorido(foto, 1600);
+  const b64 = await new Promise(ok => { const fr = new FileReader(); fr.onload = () => ok(fr.result.split(',')[1]); fr.readAsDataURL(blob); });
+  const r = await fetch(OLLAMA + '/api/chat', {
+    method: 'POST',
+    body: JSON.stringify({
+      model: MODELO_IA,
+      stream: false,
+      format: ESQUEMA_IA,
+      options: { temperature: 0 },
+      messages: [{ role: 'user', content: PROMPT_IA, images: [b64] }]
+    })
+  });
+  if (!r.ok) throw new Error('IA do PC respondeu ' + r.status);
+  const { message } = await r.json();
+  const { itens = [] } = JSON.parse(message.content);
+  // a IA às vezes já manda "10A"; tira o A para não virar "10AA"
+  const amp = a => String(a || '').replace(/\s*a(mp)?s?\s*$/i, '').replace(',', '.');
+  return itens.filter(i => i.codigo).map(i => `${i.codigo} ${amp(i.amperagem) ? amp(i.amperagem) + 'A ' : ''}${i.descricao}`.trim()).join('\n');
+}
+
+// Se a IA do PC estiver rodando, aparece a opção e ela vira a leitura padrão.
+async function oferecerIaDoPc() {
+  if (!(await ollamaDisponivel())) return;
+  const sel = $('#f-modo');
+  if (!sel.querySelector('[value=ollama]')) sel.insertAdjacentHTML('afterbegin', '<option value="ollama">🤖 IA do PC (Ollama) — a melhor</option>');
+  sel.value = 'ollama';
+}
+
 // Fila: as fotos são lidas uma de cada vez, em segundo plano; cada uma já joga os itens na tabela.
 let fila = Promise.resolve();
 let naFila = 0;
@@ -350,7 +420,8 @@ function atualizarProgresso() {
   $('#progresso').textContent = naFila ? `Lendo… ${naFila} foto${naFila > 1 ? 's' : ''} na fila` : '';
 }
 function enfileirarLeitura(foto) {
-  if (!window.Tesseract) return aviso('OCR não carregou. Abra o app uma vez com internet.');
+  const modo = $('#f-modo').value;
+  if (modo !== 'ollama' && !window.Tesseract) return aviso('OCR não carregou. Abra o app uma vez com internet.');
   if (foto.estado.startsWith('⏳')) return;
   foto.estado = '⏳ na fila';
   naFila++;
@@ -361,9 +432,9 @@ function enfileirarLeitura(foto) {
     try {
       foto.estado = '⏳ lendo';
       renderFotos();
-      const worker = await obterWorker();
-      const txt = await lerFoto(worker, foto, $('#f-modo').value, $('#f-duvidosas').checked, (t, n) => {
-        foto.estado = n > 1 ? `⏳ lendo ${t}/${n}` : '⏳ lendo';
+      const worker = modo === 'ollama' ? null : await obterWorker();
+      const txt = await lerFoto(worker, foto, modo, $('#f-duvidosas').checked, (t, n) => {
+        foto.estado = n > 1 ? `⏳ lendo ${t}/${n}` : modo === 'ollama' ? '⏳ IA lendo' : '⏳ lendo';
         renderFotos();
       });
       acrescentarTexto(txt);
@@ -1502,3 +1573,4 @@ renderAnosVeiculo();
 renderPosicoes();
 restaurarRascunho();
 receberCompartilhado();
+oferecerIaDoPc();
