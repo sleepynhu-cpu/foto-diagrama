@@ -36,6 +36,7 @@ header {
   padding: 8px 16px;
 }
 h1 { font-size: 18px; margin: 4px 0 8px; }
+#status-offline { font-size: 12px; font-weight: 400; color: var(--suave); margin-left: 6px; }
 h2 { font-size: 20px; margin: 8px 0 12px; }
 nav { display: flex; gap: 6px; overflow-x: auto; }
 nav button { background: transparent; color: var(--texto); border: 1px solid var(--borda); }

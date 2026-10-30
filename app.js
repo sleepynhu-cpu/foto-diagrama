@@ -63,21 +63,30 @@ async function prepararImagem(arquivo) {
   return c;
 }
 
-let worker = null;
+// O worker é criado uma vez só; criar já baixa (e guarda) o leitor e o idioma para uso offline.
+let workerPromise = null;
+function obterWorker() {
+  if (!workerPromise) {
+    workerPromise = Tesseract.createWorker('por+eng', 1, {
+      logger: m => { if (m.status === 'recognizing text') $('#progresso').textContent = `Lendo… ${Math.round(m.progress * 100)}%`; }
+    }).then(async w => {
+      await w.setParameters({ preserve_interword_spaces: '1' });
+      return w;
+    });
+    workerPromise.catch(() => { workerPromise = null; });
+  }
+  return workerPromise;
+}
+
 $('#b-ler').onclick = async () => {
   if (!fotos.length) return aviso('Adicione uma foto primeiro.');
-  if (!window.Tesseract) return aviso('OCR não carregou. Precisa de internet na primeira vez.');
+  if (!window.Tesseract) return aviso('OCR não carregou. Abra o app uma vez com internet.');
   const botao = $('#b-ler');
   const prog = $('#progresso');
   botao.disabled = true;
   try {
-    if (!worker) {
-      prog.textContent = 'Carregando OCR (só na primeira vez)…';
-      worker = await Tesseract.createWorker('por+eng', 1, {
-        logger: m => { if (m.status === 'recognizing text') prog.textContent = `Lendo… ${Math.round(m.progress * 100)}%`; }
-      });
-      await worker.setParameters({ preserve_interword_spaces: '1' });
-    }
+    prog.textContent = 'Preparando o leitor…';
+    const worker = await obterWorker();
     const textos = [];
     for (let i = 0; i < fotos.length; i++) {
       prog.textContent = `Foto ${i + 1}/${fotos.length}…`;
@@ -745,6 +754,26 @@ function renderMatriz() {
   resumo.innerHTML = linhas.length ? `<ul>${linhas.join('')}</ul>` : '<p class="dica">Adicione outro ano para comparar.</p>';
   resumo.querySelectorAll('[data-ano]').forEach(b => b.onclick = () => novoParaAno(lista[0], Number(b.dataset.ano)));
 }
+
+// ---------- modo offline ----------
+// Registra o service worker e, com internet, já deixa o leitor de texto baixado para usar sem sinal.
+async function prepararOffline() {
+  const st = $('#status-offline');
+  if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
+  try {
+    await navigator.serviceWorker.register('sw.js');
+    await navigator.serviceWorker.ready;
+    navigator.storage?.persist?.(); // pede para o navegador não apagar os dados salvos
+    if (!window.Tesseract) { st.textContent = '⚠ sem leitor (abra com internet)'; return; }
+    st.textContent = '⏳ preparando offline…';
+    await obterWorker();
+    st.textContent = '✔ funciona offline';
+  } catch (e) {
+    console.error(e);
+    st.textContent = navigator.onLine ? '' : '⚠ abra com internet uma vez';
+  }
+}
+window.addEventListener('load', () => setTimeout(prepararOffline, 500));
 
 carregarPrefs();
 document.body.classList.toggle('fixado', fixado());
