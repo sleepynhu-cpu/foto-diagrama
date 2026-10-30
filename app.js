@@ -384,6 +384,25 @@ async function ollamaDisponivel() {
   } catch { return false; }
 }
 
+// O que a IA aprende com você: as palavras que você já usou nas descrições salvas e os erros
+// que você já corrigiu. Não vai a tabela dos outros anos, senão ela copiaria e esconderia as mudanças.
+function dicasParaIa() {
+  const palavras = new Set();
+  const add = t => String(t).split(/[\s/,;()]+/).forEach(p => {
+    p = p.replace(/[^\p{L}\p{N}-]/gu, '');
+    if (p.length >= 3 && !/^\d+$/.test(p)) palavras.add(p);
+  });
+  for (const d of diagramas) for (const i of d.itens) add(i.descricao);
+  const correcoes = Object.entries(aprendizado.correcoes).slice(-30);
+  correcoes.forEach(([, certo]) => add(certo));
+  let dicas = '';
+  if (palavras.size) dicas += `\nPalavras que costumam aparecer nessas tabelas (use para ler palavras difíceis): ${[...palavras].slice(0, 250).join(', ')}.`;
+  if (correcoes.length) dicas += `\nErros que você já cometeu e foram corrigidos (lido → certo):\n` +
+    correcoes.map(([lido, certo]) => `- "${lido}" → "${certo}"`).join('\n');
+  if (dicas) dicas += '\nMesmo assim, transcreva sempre o que está escrito na foto.';
+  return dicas;
+}
+
 async function lerComOllama(foto) {
   const blob = await recorteColorido(foto, 1600);
   const b64 = await new Promise(ok => { const fr = new FileReader(); fr.onload = () => ok(fr.result.split(',')[1]); fr.readAsDataURL(blob); });
@@ -394,7 +413,7 @@ async function lerComOllama(foto) {
       stream: false,
       format: ESQUEMA_IA,
       options: { temperature: 0 },
-      messages: [{ role: 'user', content: PROMPT_IA, images: [b64] }]
+      messages: [{ role: 'user', content: PROMPT_IA + dicasParaIa(), images: [b64] }]
     })
   });
   if (!r.ok) throw new Error('IA do PC respondeu ' + r.status);
