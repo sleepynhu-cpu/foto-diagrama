@@ -92,7 +92,8 @@ button:disabled { opacity: .5; cursor: wait; }
   border-top: 1px solid var(--borda);
 }
 .check { display: flex; gap: 6px; align-items: center; color: var(--texto); margin: 0; }
-.check input { width: auto; margin: 0; }
+.check input, .linha .check input { width: auto; margin: 0; flex: none; }
+.linha .check input.curto { flex: 0 0 64px; }
 .linha input.curto { flex: 0 0 64px; width: 64px; padding: 6px; }
 .linha select.curto-select { flex: 0 1 auto; }
 #anos-veiculo { font-size: 14px; color: var(--suave); margin: 4px 0 10px; }
@@ -120,6 +121,7 @@ body.fixado #f-marca, body.fixado #f-modelo, body.fixado #f-tipo, body.fixado #f
 }
 .foto .selo.alerta { background: #b54708; }
 .foto .selo.ok { background: #067647; }
+.foto button.lens { right: auto; left: 4px; font-size: 11px; padding: 0 6px; }
 
 .modal {
   position: fixed; inset: 0; z-index: 20;
@@ -151,7 +153,7 @@ th { background: var(--bg); position: sticky; top: 0; }
 #n-conferir { margin: 0 0 6px; }
 #n-conferir:empty { display: none; }
 #tabela-itens td:nth-child(1) { width: 90px; }
-#tabela-itens td:nth-child(3) { width: 70px; }
+#tabela-itens td:nth-child(2) { width: 70px; }
 #tabela-itens td:last-child { width: 40px; }
 #tabela-itens td:last-child button { padding: 4px 8px; }
 

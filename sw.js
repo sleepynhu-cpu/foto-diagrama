@@ -2,7 +2,7 @@
 // - Arquivos do próprio site: tenta a rede primeiro (pega atualizações); sem rede, usa a cópia guardada.
 // - Arquivos do CDN (Tesseract, com versão fixa na URL): usa a cópia guardada; só baixa se não tiver.
 //   Ficam num cache separado que não é apagado quando o app muda de versão.
-const CACHE = 'foto-diagrama-v4';
+const CACHE = 'foto-diagrama-v5';
 const CACHE_CDN = 'foto-diagrama-cdn';
 const APP = ['./', 'index.html', 'app.js', 'style.css', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 const CDN = ['https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js'];

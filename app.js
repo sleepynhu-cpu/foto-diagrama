@@ -52,11 +52,37 @@ function renderFotos() {
     d.className = 'foto';
     const selo = f.estado ? `<span class="selo${f.estado.startsWith('✔') ? ' ok' : ''}">${esc(f.estado)}</span>`
       : f.ajustada ? '<span class="selo">✂ ajustada</span>' : '<span class="selo alerta">toque p/ recortar</span>';
-    d.innerHTML = `<img src="${f.url}" title="Toque para recortar/girar">${selo}<button title="Remover">✕</button>`;
+    d.innerHTML = `<img src="${f.url}" title="Toque para recortar/girar">${selo}<button title="Remover">✕</button>` +
+      `<button class="lens" title="Mandar para o Google Lens">🔍 Lens</button>`;
+    d.querySelector('.lens').onclick = () => mandarParaLens(f);
     d.querySelector('img').onclick = () => abrirRecorte(i);
     d.querySelector('button').onclick = () => { URL.revokeObjectURL(f.url); fotos.splice(i, 1); renderFotos(); };
     box.appendChild(d);
   });
+}
+
+// Manda a foto (já girada e recortada, colorida) para o compartilhar do Android → Google Lens.
+// No Lens: selecione o texto → Compartilhar → Diagramas; se esta foto já foi lida pelo app,
+// ele compara e aprende sozinho. (Só a foto vai para o Google, e só quando você toca aqui.)
+async function mandarParaLens(foto) {
+  try {
+    const img = await createImageBitmap(foto.arquivo);
+    const girada = girar(img, foto.giro || 0, foto.inclinacao || 0);
+    const r = foto.recorte || { x: 0, y: 0, w: 1, h: 1 };
+    const sw = r.w * girada.width, sh = r.h * girada.height;
+    const esc = Math.min(1, 2000 / Math.max(sw, sh));
+    const c = document.createElement('canvas');
+    c.width = Math.round(sw * esc);
+    c.height = Math.round(sh * esc);
+    c.getContext('2d').drawImage(girada, r.x * girada.width, r.y * girada.height, sw, sh, 0, 0, c.width, c.height);
+    const blob = await new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.9));
+    const arquivo = new File([blob], 'tabela.jpg', { type: 'image/jpeg' });
+    if (!navigator.canShare?.({ files: [arquivo] })) return aviso('Este navegador não deixa compartilhar imagem. Use pelo celular.');
+    if (!foto.lida) aviso('Dica: espere o ✔ da leitura para o app poder aprender com o texto do Lens.');
+    await navigator.share({ files: [arquivo] });
+  } catch (e) {
+    if (e.name !== 'AbortError') aviso('Não consegui compartilhar: ' + e.message);
+  }
 }
 
 // Desenha a imagem girada (giro em 90° + inclinação fina), com fundo branco nos cantos.
@@ -784,8 +810,8 @@ function linhaTabela(i = {}) {
   const tr = document.createElement('tr');
   tr.innerHTML = `
     <td><input data-c="codigo" value="${esc(i.codigo)}"></td>
-    <td><input data-c="descricao" value="${esc(i.descricao)}"></td>
     <td><input data-c="amperagem" value="${esc(i.amperagem)}" inputmode="decimal"></td>
+    <td><input data-c="descricao" value="${esc(i.descricao)}"></td>
     <td><input data-c="obs" value="${esc(i.obs)}"></td>
     <td><button class="perigo" title="Remover">✕</button></td>`;
   if (i.posicao) tr.dataset.pos = JSON.stringify(i.posicao);
@@ -1324,7 +1350,9 @@ function ordenados() {
 }
 function limpo(d) {
   const { marca, modelo, ano, versao, tipo, local, fonte, notas, layout = null, itens } = d;
-  return { marca, modelo, ano, versao, tipo, local, fonte, notas, layout, itens };
+  // no arquivo, cada item sai na ordem: código, amperagem, descrição
+  const ordenar = ({ codigo, amperagem, descricao, obs, posicao }) => ({ codigo, amperagem, descricao, obs, ...(posicao ? { posicao } : {}) });
+  return { marca, modelo, ano, versao, tipo, local, fonte, notas, layout, itens: itens.map(ordenar) };
 }
 function baixar(nome, conteudo, tipo) {
   const a = document.createElement('a');
@@ -1427,7 +1455,7 @@ function renderMatriz() {
       }
       if (cls) { teveMudanca = true; mudancas[col]++; }
       if (!item) return `<td class="${cls}">${cls ? '<small>(não existe)</small>' : '—'}</td>`;
-      return `<td class="${cls}">${esc(item.descricao)}${item.amperagem ? ` <small>${esc(item.amperagem)}A</small>` : ''}` +
+      return `<td class="${cls}">${item.amperagem ? `<b>${esc(item.amperagem)}A</b> ` : ''}${esc(item.descricao)}` +
         `${item.posicao ? `<br><small>📍 ${posTxt(item.posicao)}</small>` : ''}${item.obs ? `<br><small>${esc(item.obs)}</small>` : ''}</td>`;
     });
     if (soMudancas && !teveMudanca) continue;
