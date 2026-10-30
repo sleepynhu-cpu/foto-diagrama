@@ -472,7 +472,8 @@ function corrigirSequencia(itens) {
 // (assim dá para corrigir o texto e converter de novo), mantendo a posição na caixa.
 // texto: só o trecho novo (foto recém-lida, texto colado); sem ele, converte a caixa de texto toda.
 function converterTexto(texto = $('#f-texto').value) {
-  const novos = parseTexto(texto);
+  const ctx = contextoAprendizado();
+  const novos = parseTexto(texto).map(i => corrigirItem(i, ctx));
   if (!novos.length) { aviso('Não achei linhas com código (ex: FB1, F12).'); return 0; }
   const itens = lerTabela().filter(i => i.codigo || i.descricao);
   let adicionados = 0, atualizados = 0;
@@ -480,14 +481,201 @@ function converterTexto(texto = $('#f-texto').value) {
     const ex = itens.find(i => i.codigo === n.codigo);
     if (!ex) { itens.push(n); adicionados++; }
     else if (ex.descricao !== n.descricao || ex.amperagem !== n.amperagem) {
-      Object.assign(ex, { descricao: n.descricao, amperagem: n.amperagem, obs: n.obs || ex.obs });
+      Object.assign(ex, { descricao: n.descricao, amperagem: n.amperagem, obs: n.obs || ex.obs, lido: n.lido });
       atualizados++;
     }
   }
   renderTabela(itens);
-  const duvidas = novos.filter(n => n.obs).length;
-  aviso(`${adicionados} adicionados` + (atualizados ? `, ${atualizados} atualizados` : '') + (duvidas ? ` · ${duvidas} para conferir` : ''));
+  const duvidas = novos.filter(n => n.obs && !n.obs.startsWith('🧠')).length;
+  const corrigidos = novos.filter(n => n.obs?.startsWith('🧠')).length;
+  aviso(`${adicionados} adicionados` + (atualizados ? `, ${atualizados} atualizados` : '') +
+    (corrigidos ? ` · 🧠 ${corrigidos} corrigidos` : '') + (duvidas ? ` · ${duvidas} para conferir` : ''));
   return novos.length;
+}
+
+// ---------- aprendizado (só texto, fica no aparelho) ----------
+// 1) Ao salvar, compara o que o leitor leu com o que você deixou na tabela e guarda a correção.
+// 2) Na próxima leitura: aplica correções já aprendidas; se a descrição tem palavra "estranha"
+//    (que não existe em nada que você já salvou), troca pela descrição do mesmo código em outro ano
+//    do mesmo veículo, ou por uma descrição/palavra conhecida bem parecida.
+//    Se todas as palavras são conhecidas, não mexe: pode ser uma mudança de verdade entre os anos.
+const CHAVE_APRENDIZADO = 'aprendizado-v1';
+let aprendizado = carregarAprendizado();
+function carregarAprendizado() {
+  try { return JSON.parse(localStorage.getItem(CHAVE_APRENDIZADO)) || { correcoes: {} }; } catch { return { correcoes: {} }; }
+}
+function gravarAprendizado() {
+  try { localStorage.setItem(CHAVE_APRENDIZADO, JSON.stringify(aprendizado)); } catch {}
+}
+
+// Palavras comuns em caixas de fusíveis, para já começar sabendo alguma coisa.
+const PALAVRAS_BASE = ('farol faróis baixo alto esquerdo direito buzina vidro vidros elétrico elétricos dianteiro dianteiros ' +
+  'traseiro traseiros painel instrumentos tomada ventilador ventoinha radiador módulo airbag desembaçador fusível ' +
+  'principal ar condicionado luz luzes freio lanterna lanternas ré injeção eletrônica bomba combustível partida ignição ' +
+  'rádio multimídia som alarme trava travas porta portas retrovisor retrovisores limpador lavador para-brisa vigia ' +
+  'compressor embreagem sensor sonda lambda bobina bobinas motor câmbio iluminação interna placa neblina pisca seta ' +
+  'alerta acendedor isqueiro teto solar banco bancos aquecimento direção hidráulica central relé relés reserva ' +
+  'tração cruzeiro piloto automático estacionamento câmera bateria alternador arrefecimento válvula canister ' +
+  'corpo borboleta acelerador pedal velocidade sinalização emergência cabine caçamba diagnose conector chave ' +
+  'imobilizador comutador coluna volante climatizador aquecedor interruptor gerenciamento comando unidade de do da dos das e').split(' ');
+
+const palavrasDe = t => normalizar(t).split(/[^a-z0-9]+/).filter(Boolean);
+
+function distancia(a, b) {
+  if (a === b) return 0;
+  let ant = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const atual = [i];
+    for (let j = 1; j <= b.length; j++)
+      atual[j] = Math.min(ant[j] + 1, atual[j - 1] + 1, ant[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    ant = atual;
+  }
+  return ant[b.length];
+}
+function parecido(a, b) {
+  a = normalizar(a); b = normalizar(b);
+  const m = Math.max(a.length, b.length);
+  return m ? 1 - distancia(a, b) / m : 1;
+}
+
+// Tudo que o app já sabe: vocabulário (palavra sem acento → como escrever), descrições salvas e,
+// para o veículo do formulário, a descrição de cada código no ano mais próximo.
+function contextoAprendizado() {
+  const voc = new Map();
+  const addPalavras = t => String(t).split(/[\s/,;()]+/).forEach(p => {
+    const n = normalizar(p).replace(/[^a-z0-9-]/g, '');
+    if (n.length >= 2 && !voc.has(n)) voc.set(n, p.replace(/[^\p{L}\p{N}-]/gu, ''));
+  });
+  const frases = new Set();
+  for (const d of diagramas) for (const i of d.itens) if (i.descricao) { addPalavras(i.descricao); frases.add(i.descricao); }
+  for (const v of Object.values(aprendizado.correcoes)) { addPalavras(v); frases.add(v); }
+  PALAVRAS_BASE.forEach(addPalavras);
+
+  const v = veiculoDoForm();
+  const ano = Number($('#f-ano').value) || 0;
+  const referencia = {};
+  if (v.modelo) {
+    diagramas.filter(d => chaveGrupo(d) === chaveGrupo(v) && d.id !== editandoId)
+      .sort((a, b) => Math.abs((a.ano || 0) - ano) - Math.abs((b.ano || 0) - ano))
+      .forEach(d => d.itens.forEach(i => {
+        if (i.descricao && !referencia[i.codigo]) referencia[i.codigo] = { descricao: i.descricao, amperagem: i.amperagem, ano: d.ano };
+      }));
+  }
+  return { voc, frases: [...frases], referencia };
+}
+
+function corrigirItem(item, ctx) {
+  const lido = item.descricao;
+  if (!lido) return item;
+  const com = (descricao, porque) => descricao === lido ? { ...item, lido } :
+    { ...item, descricao, lido, obs: `🧠 ${porque} (lido: “${lido}”)` + (item.obs ? ' · ' + item.obs : '') };
+
+  // 1) você já corrigiu exatamente esse texto antes
+  const aprendida = aprendizado.correcoes[normalizar(lido)];
+  if (aprendida) return com(aprendida, 'corrigido como antes');
+
+  // só mexe se tem palavra que o app não conhece (cara de erro de leitura)
+  const estranhas = palavrasDe(lido).filter(p => p.length >= 3 && !ctx.voc.has(p) && !/^\d+[a-z]?$/.test(p));
+  if (!estranhas.length) return { ...item, lido };
+
+  // 2) mesmo código em outro ano do mesmo veículo
+  // (se a amperagem também bate, aceita leitura bem mais embaralhada)
+  const ref = ctx.referencia[item.codigo];
+  const mesmaAmp = ref && item.amperagem && ref.amperagem === item.amperagem;
+  if (ref && parecido(lido, ref.descricao) >= (mesmaAmp ? 0.35 : 0.65)) return com(ref.descricao, `como em ${ref.ano}`);
+
+  // 3) alguma descrição já salva bem parecida
+  let melhor = null, nota = 0;
+  for (const f of ctx.frases) { const s = parecido(lido, f); if (s > nota) { nota = s; melhor = f; } }
+  if (melhor && nota >= 0.8) return com(melhor, 'descrição parecida');
+
+  // 4) palavra por palavra: troca só as estranhas pela conhecida mais próxima
+  const corrigida = lido.split(/(\s+)/).map(tok => {
+    const n = normalizar(tok).replace(/[^a-z0-9-]/g, '');
+    if (n.length < 4 || ctx.voc.has(n) || /\d/.test(n)) return tok;
+    let alvo = null, dist = n.length >= 7 ? 3 : 2;
+    for (const [k, original] of ctx.voc) {
+      if (Math.abs(k.length - n.length) > dist) continue;
+      const dd = distancia(n, k);
+      if (dd < dist) { dist = dd; alvo = original; }
+    }
+    if (!alvo) return tok;
+    return /^\p{Lu}/u.test(tok) ? alvo.charAt(0).toUpperCase() + alvo.slice(1) : alvo;
+  }).join('');
+  return com(corrigida, 'palavras corrigidas');
+}
+
+// ---------- ensinar: comparar a leitura com o texto certo ----------
+$('#b-ensinar').onclick = () => {
+  if (!lerTabela().some(i => i.codigo)) return aviso('Leia uma foto primeiro; depois cole o texto certo para ensinar.');
+  $('#e-resultado').innerHTML = '';
+  $('#ensinar').hidden = false;
+  document.body.style.overflow = 'hidden';
+  $('#e-texto').focus();
+};
+$('#e-fechar').onclick = () => { $('#ensinar').hidden = true; document.body.style.overflow = ''; };
+$('#e-colar').onclick = async () => {
+  try { $('#e-texto').value = await navigator.clipboard.readText(); }
+  catch { $('#e-texto').focus(); aviso('Toque e segure na caixa e escolha Colar.'); }
+};
+$('#e-ok').onclick = () => {
+  const certos = parseTexto($('#e-texto').value);
+  if (!certos.length) return aviso('Não achei itens no texto certo (ex: F1 10A Luz de freio).');
+  const tabela = lerTabela().filter(i => i.codigo || i.descricao);
+
+  // junta cada item lido com o certo: primeiro pelo código, depois os que sobraram pela ordem
+  const pares = new Map();
+  for (const c of certos) {
+    const t = tabela.find(x => x.codigo === c.codigo && ![...pares.values()].includes(x));
+    if (t) pares.set(c, t);
+  }
+  const sobram = tabela.filter(x => ![...pares.values()].includes(x));
+  certos.filter(c => !pares.has(c)).forEach((c, k) => { if (sobram[k]) pares.set(c, sobram[k]); });
+
+  let sozinho = 0, comAprendizado = 0, aprendeu = 0;
+  const erros = [];
+  for (const c of certos) {
+    const t = pares.get(c);
+    if (!t) { erros.push(`<li><b>${esc(c.codigo)}</b>: não foi lido</li>`); continue; }
+    const lido = t.lido || t.descricao;
+    const igual = (desc) => t.codigo === c.codigo && (t.amperagem || '') === (c.amperagem || '') && normalizar(desc) === normalizar(c.descricao);
+    if (igual(lido)) sozinho++;
+    if (igual(t.descricao)) comAprendizado++;
+    if (!igual(lido)) {
+      const partes = [];
+      if (t.codigo !== c.codigo) partes.push(`código “${esc(t.codigo)}”`);
+      if ((t.amperagem || '') !== (c.amperagem || '')) partes.push(`amperagem “${esc(t.amperagem || '—')}”`);
+      if (normalizar(lido) !== normalizar(c.descricao)) partes.push(`“${esc(lido)}”`);
+      erros.push(`<li><b>${esc(c.codigo)}</b>: leu ${partes.join(', ')} → certo: ${esc(c.amperagem ? c.amperagem + 'A ' : '')}${esc(c.descricao)}</li>`);
+    }
+    if (lido && c.descricao && normalizar(lido) !== normalizar(c.descricao)) {
+      aprendizado.correcoes[normalizar(lido)] = c.descricao;
+      aprendeu++;
+    }
+  }
+  gravarAprendizado();
+
+  // a tabela fica com o texto certo (mantendo as posições na caixa que já tinham sido marcadas)
+  renderTabela(certos.map(c => ({ ...c, posicao: pares.get(c)?.posicao })));
+
+  const total = certos.length;
+  $('#e-resultado').innerHTML = `
+    <p class="placar">O leitor acertou <b>${sozinho} de ${total}</b> sozinho` +
+    (comAprendizado > sozinho ? ` · com o aprendizado, <b>${comAprendizado} de ${total}</b>` : '') + `.</p>
+    <p class="dica">🧠 Aprendi ${aprendeu} correç${aprendeu === 1 ? 'ão' : 'ões'}. A tabela agora está com o texto certo.</p>
+    ${erros.length ? `<ul>${erros.join('')}</ul>` : '<p>Nenhum erro! 🎉</p>'}`;
+};
+
+// Ao salvar: o que mudou entre o que foi lido e o que ficou na tabela vira correção aprendida.
+function aprenderCorrecoes(itens) {
+  let n = 0;
+  for (const i of itens) {
+    if (!i.lido || !i.descricao || normalizar(i.lido) === normalizar(i.descricao)) continue;
+    aprendizado.correcoes[normalizar(i.lido)] = i.descricao;
+    n++;
+  }
+  if (n) gravarAprendizado();
+  return n;
 }
 $('#b-converter').onclick = () => converterTexto();
 
@@ -530,6 +718,7 @@ function linhaTabela(i = {}) {
     <td><input data-c="obs" value="${esc(i.obs)}"></td>
     <td><button class="perigo" title="Remover">✕</button></td>`;
   if (i.posicao) tr.dataset.pos = JSON.stringify(i.posicao);
+  if (i.lido) tr.dataset.lido = i.lido; // o que o leitor leu, para aprender com a sua correção
   tr.querySelector('button').onclick = () => { tr.remove(); renderPosicoes(); };
   return tr;
 }
@@ -545,6 +734,7 @@ function lerTabela() {
     tr.querySelectorAll('input').forEach(inp => o[inp.dataset.c] = inp.value.trim());
     o.codigo = o.codigo.toUpperCase().replace(/\s+/g, '');
     if (tr.dataset.pos) o.posicao = JSON.parse(tr.dataset.pos);
+    if (tr.dataset.lido) o.lido = tr.dataset.lido;
     return o;
   });
 }
@@ -557,7 +747,10 @@ $('#b-salvar').onclick = () => {
   const d = { id: editandoId || crypto.randomUUID() };
   CAMPOS.forEach(c => d[c] = $('#f-' + c).value.trim());
   d.ano = d.ano ? Number(d.ano) : null;
-  d.itens = lerTabela().filter(i => i.codigo || i.descricao);
+  const tabela = lerTabela().filter(i => i.codigo || i.descricao);
+  // "lido" é só para o aprendizado; não vai para o diagrama salvo nem para o arquivo exportado.
+  // A observação automática do aprendizado também sai, se você não mexeu nela.
+  d.itens = tabela.map(({ lido, ...i }) => ({ ...i, obs: i.obs?.startsWith('🧠') ? '' : i.obs }));
   d.layout = d.itens.some(i => i.posicao) ? lerLayout() : null;
   if (!d.modelo || !d.ano) return aviso('Preencha pelo menos modelo e ano.');
   if (!d.itens.length) return aviso('Não há itens para salvar.');
@@ -566,7 +759,8 @@ $('#b-salvar').onclick = () => {
   d.atualizadoEm = new Date().toISOString();
   diagramas = antigo ? diagramas.map(x => x.id === d.id ? d : x) : [...diagramas, d];
   if (gravar(diagramas)) {
-    aviso(`Salvo: ${d.modelo} ${d.ano} (${d.itens.length} itens)`);
+    const aprendeu = aprenderCorrecoes(tabela);
+    aviso(`Salvo: ${d.modelo} ${d.ano} (${d.itens.length} itens)` + (aprendeu ? ` · 🧠 aprendi ${aprendeu} correções` : ''));
     limparForm();
     if (fixado()) $('#f-ano').value = proximoAno(d.ano) ?? '';
   }
@@ -968,7 +1162,21 @@ function normalizar(s) {
 }
 
 $('#busca').oninput = () => renderLista();
+function renderAprendizado() {
+  const n = Object.keys(aprendizado.correcoes).length;
+  const box = $('#aprendizado');
+  box.innerHTML = `🧠 Aprendizado: ${n} correç${n === 1 ? 'ão' : 'ões'} guardada${n === 1 ? '' : 's'} (só texto, neste aparelho)` +
+    (n ? ' <button class="perigo">Esquecer correções</button>' : '');
+  box.querySelector('button')?.addEventListener('click', () => {
+    if (!confirm('Apagar todas as correções aprendidas? Os diagramas salvos continuam.')) return;
+    aprendizado = { correcoes: {} };
+    gravarAprendizado();
+    renderAprendizado();
+  });
+}
+
 function renderLista() {
+  renderAprendizado();
   const q = normalizar($('#busca').value);
   const filtrados = diagramas.filter(d => !q || normalizar(JSON.stringify(d)).includes(q));
   const grupos = {};

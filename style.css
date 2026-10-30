@@ -139,6 +139,8 @@ body.fixado #f-marca, body.fixado #f-modelo, body.fixado #f-tipo, body.fixado #f
   touch-action: none; cursor: crosshair; border-radius: 6px;
 }
 #r-incl { width: 160px; }
+#e-resultado ul { padding-left: 20px; font-size: 14px; }
+#e-resultado .placar { font-size: 16px; margin: 10px 0 4px; }
 
 .rolagem { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: 14px; }

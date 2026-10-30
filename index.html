@@ -93,6 +93,7 @@
       <div class="linha">
         <button id="b-colar" class="secundario">📋 Colar</button>
         <button id="b-converter">⬇️ Converter texto em itens</button>
+        <button id="b-ensinar" class="secundario">🧠 Ensinar</button>
       </div>
     </fieldset>
 
@@ -135,6 +136,7 @@
   <!-- BIBLIOTECA -->
   <section id="tab-biblioteca" class="tab">
     <h2>Biblioteca</h2>
+    <div id="aprendizado" class="linha dica"></div>
     <div class="linha">
       <input id="busca" placeholder="Buscar modelo, ano, código…">
     </div>
@@ -181,6 +183,20 @@
       <button id="r-tudo" class="secundario">Foto inteira</button>
       <button id="r-cancelar" class="secundario">Cancelar</button>
     </div>
+  </div>
+</div>
+
+<div id="ensinar" class="modal" hidden>
+  <div class="modal-caixa">
+    <h2>🧠 Ensinar o leitor</h2>
+    <p class="dica">Cole aqui o texto <strong>certo</strong> dessa foto (digitado ou copiado do Google Lens). O app compara com o que ele leu, mostra o que errou e aprende para as próximas.</p>
+    <textarea id="e-texto" rows="8" placeholder="F1 10A Luz de freio&#10;F2 15A Buzina"></textarea>
+    <div class="linha">
+      <button id="e-colar" class="secundario">📋 Colar</button>
+      <button id="e-ok">Comparar e aprender</button>
+      <button id="e-fechar" class="secundario">Fechar</button>
+    </div>
+    <div id="e-resultado"></div>
   </div>
 </div>
 
