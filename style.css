@@ -119,6 +119,7 @@ body.fixado #f-marca, body.fixado #f-modelo, body.fixado #f-tipo, body.fixado #f
   background: rgba(0,0,0,.65); color: #fff; font-size: 11px; padding: 1px 6px; border-radius: 6px;
 }
 .foto .selo.alerta { background: #b54708; }
+.foto .selo.ok { background: #067647; }
 
 .modal {
   position: fixed; inset: 0; z-index: 20;

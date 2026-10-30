@@ -78,9 +78,10 @@
           <option value="11">Texto espalhado (rápido)</option>
         </select>
         <label class="check"><input id="f-duvidosas" type="checkbox"> manter linhas duvidosas</label>
+        <label class="check"><input id="f-auto" type="checkbox" checked> ler automaticamente</label>
       </div>
       <div class="linha">
-        <button id="b-ler">🔍 Ler texto das fotos</button>
+        <button id="b-ler" class="secundario">🔍 Ler fotos que faltam</button>
         <span id="progresso"></span>
       </div>
     </fieldset>
@@ -175,7 +176,8 @@
     </div>
     <div id="r-area"><canvas id="r-canvas"></canvas></div>
     <div class="linha">
-      <button id="r-ok">Usar recorte</button>
+      <button id="r-proxima">✔ Usar e tirar a próxima 📷</button>
+      <button id="r-ok" class="secundario">Usar recorte</button>
       <button id="r-tudo" class="secundario">Foto inteira</button>
       <button id="r-cancelar" class="secundario">Cancelar</button>
     </div>

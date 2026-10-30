@@ -34,12 +34,15 @@ function abrirAba(nome) {
 // ---------- fotos ----------
 $('#f-camera').onchange = e => addFotos(e.target.files);
 $('#f-galeria').onchange = e => addFotos(e.target.files);
-// Cada foto guarda: giro (múltiplos de 90°), inclinacao (graus, para endireitar) e recorte (0..1, na foto já girada).
+// Cada foto guarda: giro (múltiplos de 90°), inclinacao (graus, para endireitar), recorte (0..1, na foto já girada),
+// ajustada (já passou pela tela de recorte), lida (já foi lida) e estado (texto mostrado na miniatura).
 function addFotos(arquivos) {
-  for (const f of arquivos) fotos.push({ url: URL.createObjectURL(f), arquivo: f, giro: 0, inclinacao: 0, recorte: null });
+  const antes = fotos.length;
+  for (const f of arquivos) fotos.push({ url: URL.createObjectURL(f), arquivo: f, giro: 0, inclinacao: 0, recorte: null, ajustada: false, lida: false, estado: '' });
+  $('#f-camera').value = $('#f-galeria').value = ''; // permite escolher o mesmo arquivo de novo
   renderFotos();
-  // uma foto só (câmera): já abre o recorte, que é o que mais melhora a leitura
-  if (arquivos.length === 1) abrirRecorte(fotos.length - 1);
+  // já abre o recorte (é o que mais melhora a leitura); com várias fotos, uma depois da outra
+  if (fotos.length > antes) abrirRecorte(antes);
 }
 function renderFotos() {
   const box = $('#fotos');
@@ -47,9 +50,9 @@ function renderFotos() {
   fotos.forEach((f, i) => {
     const d = document.createElement('div');
     d.className = 'foto';
-    d.innerHTML = `<img src="${f.url}" title="Toque para recortar/girar">` +
-      `${f.recorte || f.giro || f.inclinacao ? '<span class="selo">✂ ajustada</span>' : '<span class="selo alerta">toque p/ recortar</span>'}` +
-      `<button title="Remover">✕</button>`;
+    const selo = f.estado ? `<span class="selo${f.estado.startsWith('✔') ? ' ok' : ''}">${esc(f.estado)}</span>`
+      : f.ajustada ? '<span class="selo">✂ ajustada</span>' : '<span class="selo alerta">toque p/ recortar</span>';
+    d.innerHTML = `<img src="${f.url}" title="Toque para recortar/girar">${selo}<button title="Remover">✕</button>`;
     d.querySelector('img').onclick = () => abrirRecorte(i);
     d.querySelector('button').onclick = () => { URL.revokeObjectURL(f.url); fotos.splice(i, 1); renderFotos(); };
     box.appendChild(d);
@@ -225,20 +228,31 @@ $('#r-canvas').addEventListener('pointerup', () => {
 $('#r-girar-esq').onclick = () => { rec.giro = (rec.giro + 3) % 4; rec.sel = null; desenharRecorte(); };
 $('#r-girar-dir').onclick = () => { rec.giro = (rec.giro + 1) % 4; rec.sel = null; desenharRecorte(); };
 $('#r-incl').oninput = () => { rec.sel = null; desenharRecorte(); };
-function fecharRecorte(salvar, inteira = false) {
+// Ao confirmar: a foto entra na fila de leitura (se "ler automaticamente" estiver ligado).
+// proxima: já abre a câmera de novo para a próxima foto, enquanto esta é lida em segundo plano.
+function fecharRecorte(salvar, inteira = false, proxima = false) {
   const f = fotos[rec.indice];
   if (salvar && f) {
+    const mudou = f.giro !== rec.giro || f.inclinacao !== Number($('#r-incl').value) || JSON.stringify(f.recorte) !== JSON.stringify(inteira ? null : rec.sel);
     f.giro = rec.giro;
     f.inclinacao = Number($('#r-incl').value);
     f.recorte = inteira ? null : rec.sel;
+    f.ajustada = true;
+    if (mudou) f.lida = false; // recortou de novo: lê de novo
   }
   $('#recorte').hidden = true;
   document.body.style.overflow = '';
   rec.img?.close?.();
   rec.img = null;
   renderFotos();
+  if (salvar && f && !f.lida && $('#f-auto').checked) enfileirarLeitura(f);
+  if (proxima) { $('#f-camera').click(); return; }
+  // fotos da galeria escolhidas juntas: abre o recorte da próxima que ainda não foi ajustada
+  const seguinte = fotos.findIndex(x => !x.ajustada && !x.lida);
+  if (salvar && seguinte >= 0) abrirRecorte(seguinte);
 }
 $('#r-ok').onclick = () => fecharRecorte(true);
+$('#r-proxima').onclick = () => fecharRecorte(true, false, true);
 $('#r-tudo').onclick = () => fecharRecorte(true, true);
 $('#r-cancelar').onclick = () => fecharRecorte(false);
 
@@ -303,30 +317,48 @@ async function lerFoto(worker, foto, modo, manterDuvidosas, progresso) {
   return melhor.linhas.map(l => l.texto).join('\n');
 }
 
-$('#b-ler').onclick = async () => {
-  if (!fotos.length) return aviso('Adicione uma foto primeiro.');
+// Fila: as fotos são lidas uma de cada vez, em segundo plano; cada uma já joga os itens na tabela.
+let fila = Promise.resolve();
+let naFila = 0;
+function atualizarProgresso() {
+  $('#progresso').textContent = naFila ? `Lendo… ${naFila} foto${naFila > 1 ? 's' : ''} na fila` : '';
+}
+function enfileirarLeitura(foto) {
   if (!window.Tesseract) return aviso('OCR não carregou. Abra o app uma vez com internet.');
-  const botao = $('#b-ler');
-  const prog = $('#progresso');
-  botao.disabled = true;
-  try {
-    prog.textContent = 'Preparando o leitor…';
-    const worker = await obterWorker();
-    const textos = [];
-    for (let i = 0; i < fotos.length; i++) {
-      textos.push(await lerFoto(worker, fotos[i], $('#f-modo').value, $('#f-duvidosas').checked,
-        (t, n) => prog.textContent = `Foto ${i + 1}/${fotos.length}` + (n > 1 ? ` · tentativa ${t}/${n}…` : '…')));
+  if (foto.estado.startsWith('⏳')) return;
+  foto.estado = '⏳ na fila';
+  naFila++;
+  renderFotos();
+  atualizarProgresso();
+  fila = fila.then(async () => {
+    if (!fotos.includes(foto)) return; // removida enquanto esperava
+    try {
+      foto.estado = '⏳ lendo';
+      renderFotos();
+      const worker = await obterWorker();
+      const txt = await lerFoto(worker, foto, $('#f-modo').value, $('#f-duvidosas').checked, (t, n) => {
+        foto.estado = n > 1 ? `⏳ lendo ${t}/${n}` : '⏳ lendo';
+        renderFotos();
+      });
+      acrescentarTexto(txt);
+      const n = txt.trim() ? converterTexto(txt) : 0;
+      foto.lida = true;
+      foto.estado = n ? `✔ ${n} itens` : '⚠ nada lido';
+    } catch (e) {
+      console.error(e);
+      foto.estado = '⚠ erro';
+    } finally {
+      naFila--;
+      renderFotos();
+      atualizarProgresso();
     }
-    acrescentarTexto(textos.join('\n'));
-    const n = converterTexto();
-    prog.textContent = n ? 'Pronto. Confira os itens; se corrigir o texto, toque em Converter de novo.'
-      : 'Não achei códigos. Tente recortar só a tabela, ou mude o modo de leitura.';
-  } catch (e) {
-    console.error(e);
-    prog.textContent = 'Erro ao ler: ' + e.message;
-  } finally {
-    botao.disabled = false;
-  }
+  });
+}
+
+$('#b-ler').onclick = () => {
+  const faltam = fotos.filter(f => !f.lida);
+  if (!faltam.length) return aviso(fotos.length ? 'Todas as fotos já foram lidas. Toque numa foto para recortar e ler de novo.' : 'Adicione uma foto primeiro.');
+  faltam.forEach(enfileirarLeitura);
 };
 
 // ---------- texto → itens ----------
@@ -438,8 +470,9 @@ function corrigirSequencia(itens) {
 
 // Converte o texto e junta com a tabela: código novo entra no fim; código que já existe é atualizado
 // (assim dá para corrigir o texto e converter de novo), mantendo a posição na caixa.
-function converterTexto() {
-  const novos = parseTexto($('#f-texto').value);
+// texto: só o trecho novo (foto recém-lida, texto colado); sem ele, converte a caixa de texto toda.
+function converterTexto(texto = $('#f-texto').value) {
+  const novos = parseTexto(texto);
   if (!novos.length) { aviso('Não achei linhas com código (ex: FB1, F12).'); return 0; }
   const itens = lerTabela().filter(i => i.codigo || i.descricao);
   let adicionados = 0, atualizados = 0;
@@ -456,7 +489,7 @@ function converterTexto() {
   aviso(`${adicionados} adicionados` + (atualizados ? `, ${atualizados} atualizados` : '') + (duvidas ? ` · ${duvidas} para conferir` : ''));
   return novos.length;
 }
-$('#b-converter').onclick = converterTexto;
+$('#b-converter').onclick = () => converterTexto();
 
 function acrescentarTexto(txt) {
   const atual = $('#f-texto').value.trim();
@@ -467,7 +500,7 @@ $('#b-colar').onclick = async () => {
     const txt = await navigator.clipboard.readText();
     if (!txt.trim()) return aviso('A área de transferência está vazia.');
     acrescentarTexto(txt);
-    converterTexto();
+    converterTexto(txt);
   } catch {
     $('#f-texto').focus();
     aviso('Toque e segure na caixa de texto e escolha Colar.');
@@ -482,7 +515,7 @@ function receberCompartilhado() {
   history.replaceState(null, '', location.pathname); // limpa a URL para não repetir ao recarregar
   abrirAba('novo');
   acrescentarTexto(txt);
-  converterTexto();
+  converterTexto(txt);
   $('#f-texto').scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
