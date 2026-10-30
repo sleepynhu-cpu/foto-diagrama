@@ -113,6 +113,32 @@ body.fixado #f-marca, body.fixado #f-modelo, body.fixado #f-tipo, body.fixado #f
   background: rgba(0,0,0,.6); border: 0;
 }
 
+.foto img { cursor: pointer; }
+.foto .selo {
+  position: absolute; left: 4px; bottom: 4px;
+  background: rgba(0,0,0,.65); color: #fff; font-size: 11px; padding: 1px 6px; border-radius: 6px;
+}
+.foto .selo.alerta { background: #b54708; }
+
+.modal {
+  position: fixed; inset: 0; z-index: 20;
+  background: rgba(0,0,0,.6);
+  display: flex; align-items: center; justify-content: center;
+  padding: 10px;
+}
+.modal[hidden] { display: none; }
+.modal-caixa {
+  background: var(--card); border-radius: 12px; padding: 12px;
+  width: 100%; max-width: 900px; max-height: 100%; overflow: auto;
+}
+.modal-caixa .dica { margin: 0 0 6px; }
+#r-area { text-align: center; }
+#r-canvas {
+  max-width: 100%; max-height: 60vh;
+  touch-action: none; cursor: crosshair; border-radius: 6px;
+}
+#r-incl { width: 160px; }
+
 .rolagem { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: 14px; }
 th, td { border: 1px solid var(--borda); padding: 4px 6px; text-align: left; vertical-align: top; }

@@ -72,15 +72,27 @@
       </div>
       <div id="fotos" class="fotos"></div>
       <div class="linha">
+        <select id="f-modo" class="curto-select">
+          <option value="auto">Leitura automática (melhor)</option>
+          <option value="6">Lista / tabela (rápido)</option>
+          <option value="11">Texto espalhado (rápido)</option>
+        </select>
+        <label class="check"><input id="f-duvidosas" type="checkbox"> manter linhas duvidosas</label>
+      </div>
+      <div class="linha">
         <button id="b-ler">🔍 Ler texto das fotos</button>
         <span id="progresso"></span>
       </div>
     </fieldset>
 
     <fieldset>
-      <legend>3. Texto lido (corrija se precisar)</legend>
+      <legend>3. Texto (lido da foto, colado ou compartilhado do Google Lens)</legend>
+      <p class="dica">Dica: no Google Lens, selecione o texto e toque em <strong>Compartilhar → Diagramas</strong>; o texto cai aqui já convertido.</p>
       <textarea id="f-texto" rows="8" placeholder="FB1 Fusível principal 40A&#10;FB2 Ar condicionado 30A"></textarea>
-      <button id="b-converter">⬇️ Converter texto em itens</button>
+      <div class="linha">
+        <button id="b-colar" class="secundario">📋 Colar</button>
+        <button id="b-converter">⬇️ Converter texto em itens</button>
+      </div>
     </fieldset>
 
     <fieldset>
@@ -152,6 +164,23 @@
     </div>
   </section>
 </main>
+
+<div id="recorte" class="modal" hidden>
+  <div class="modal-caixa">
+    <p class="dica">Arraste o dedo marcando <strong>só a parte com o texto</strong> (a lista FB1, FB2…). Use “Endireitar” se a foto estiver torta.</p>
+    <div class="linha">
+      <button id="r-girar-esq" class="secundario">⟲ 90°</button>
+      <button id="r-girar-dir" class="secundario">⟳ 90°</button>
+      <label class="check">Endireitar <input id="r-incl" type="range" min="-20" max="20" step="0.5" value="0"></label>
+    </div>
+    <div id="r-area"><canvas id="r-canvas"></canvas></div>
+    <div class="linha">
+      <button id="r-ok">Usar recorte</button>
+      <button id="r-tudo" class="secundario">Foto inteira</button>
+      <button id="r-cancelar" class="secundario">Cancelar</button>
+    </div>
+  </div>
+</div>
 
 <div id="aviso"></div>
 <script src="app.js"></script>

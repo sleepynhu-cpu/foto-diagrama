@@ -34,9 +34,12 @@ function abrirAba(nome) {
 // ---------- fotos ----------
 $('#f-camera').onchange = e => addFotos(e.target.files);
 $('#f-galeria').onchange = e => addFotos(e.target.files);
+// Cada foto guarda: giro (múltiplos de 90°), inclinacao (graus, para endireitar) e recorte (0..1, na foto já girada).
 function addFotos(arquivos) {
-  for (const f of arquivos) fotos.push({ url: URL.createObjectURL(f), arquivo: f });
+  for (const f of arquivos) fotos.push({ url: URL.createObjectURL(f), arquivo: f, giro: 0, inclinacao: 0, recorte: null });
   renderFotos();
+  // uma foto só (câmera): já abre o recorte, que é o que mais melhora a leitura
+  if (arquivos.length === 1) abrirRecorte(fotos.length - 1);
 }
 function renderFotos() {
   const box = $('#fotos');
@@ -44,24 +47,200 @@ function renderFotos() {
   fotos.forEach((f, i) => {
     const d = document.createElement('div');
     d.className = 'foto';
-    d.innerHTML = `<img src="${f.url}"><button title="Remover">✕</button>`;
+    d.innerHTML = `<img src="${f.url}" title="Toque para recortar/girar">` +
+      `${f.recorte || f.giro || f.inclinacao ? '<span class="selo">✂ ajustada</span>' : '<span class="selo alerta">toque p/ recortar</span>'}` +
+      `<button title="Remover">✕</button>`;
+    d.querySelector('img').onclick = () => abrirRecorte(i);
     d.querySelector('button').onclick = () => { URL.revokeObjectURL(f.url); fotos.splice(i, 1); renderFotos(); };
     box.appendChild(d);
   });
 }
 
-// Escala de cinza + ampliação melhora bastante a leitura do Tesseract.
-async function prepararImagem(arquivo) {
-  const img = await createImageBitmap(arquivo);
-  const escala = Math.min(3, Math.max(1, 2000 / Math.max(img.width, img.height)));
+// Desenha a imagem girada (giro em 90° + inclinação fina), com fundo branco nos cantos.
+function girar(img, giro, inclinacao, escala = 1) {
+  const rad = (giro * 90 + inclinacao) * Math.PI / 180;
+  const w = img.width * escala, h = img.height * escala;
+  const cos = Math.abs(Math.cos(rad)), sin = Math.abs(Math.sin(rad));
   const c = document.createElement('canvas');
-  c.width = img.width * escala;
-  c.height = img.height * escala;
-  const ctx = c.getContext('2d');
-  ctx.filter = 'grayscale(1) contrast(1.4)';
-  ctx.drawImage(img, 0, 0, c.width, c.height);
+  c.width = Math.round(w * cos + h * sin);
+  c.height = Math.round(w * sin + h * cos);
+  const x = c.getContext('2d');
+  x.fillStyle = '#fff';
+  x.fillRect(0, 0, c.width, c.height);
+  x.translate(c.width / 2, c.height / 2);
+  x.rotate(rad);
+  x.drawImage(img, -w / 2, -h / 2, w, h);
   return c;
 }
+
+// Gira, recorta e amplia: o texto fica com ~30-40 px de altura, que é onde o Tesseract lê melhor.
+async function prepararImagem(foto) {
+  const img = await createImageBitmap(foto.arquivo);
+  const girada = girar(img, foto.giro || 0, foto.inclinacao || 0);
+  const r = foto.recorte || { x: 0, y: 0, w: 1, h: 1 };
+  const sx = r.x * girada.width, sy = r.y * girada.height, sw = r.w * girada.width, sh = r.h * girada.height;
+  const escala = Math.min(4, Math.max(1, 2200 / Math.max(sw, sh)));
+  const c = document.createElement('canvas');
+  c.width = Math.round(sw * escala);
+  c.height = Math.round(sh * escala);
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.filter = 'grayscale(1)';
+  ctx.drawImage(girada, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  if (foto.inclinacao) return c; // a pessoa já endireitou na mão
+  const angulo = detectarInclinacao(c);
+  return Math.abs(angulo) >= 0.5 ? girar(c, 0, angulo) : c;
+}
+
+// Acha o ângulo em que as linhas de texto ficam mais "retas": testa ângulos e vê qual
+// concentra os pixels escuros em menos faixas horizontais (perfil de projeção).
+function detectarInclinacao(src) {
+  const esc = Math.min(1, 600 / src.width);
+  const w = Math.round(src.width * esc), h = Math.round(src.height * esc);
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const x = c.getContext('2d', { willReadFrequently: true });
+  x.drawImage(src, 0, 0, w, h);
+  const p = x.getImageData(0, 0, w, h).data;
+  let media = 0;
+  for (let i = 0; i < p.length; i += 4) media += p[i];
+  media /= w * h;
+  // Só contornos de traços escuros (pixel escuro com vizinho claro na horizontal): assim áreas
+  // grandes escuras, como o fundo nas bordas da foto, não contam. Pula a margem de 3%.
+  const escuros = [];
+  const lim = media * 0.7, mx = Math.round(w * 0.03) + 2, my = Math.round(h * 0.03);
+  const v = (xx, yy) => p[(yy * w + xx) * 4];
+  for (let yy = my; yy < h - my; yy++)
+    for (let xx = mx; xx < w - mx; xx++)
+      if (v(xx, yy) < lim && (v(xx - 2, yy) >= lim || v(xx + 2, yy) >= lim)) escuros.push(xx - w / 2, yy - h / 2);
+  if (escuros.length < 100) return 0;
+  let melhor = 0, melhorNota = -1;
+  const faixas = new Float64Array(h * 2);
+  for (let ang = -15; ang <= 15; ang += 0.5) {
+    const r = ang * Math.PI / 180, cos = Math.cos(r), sin = Math.sin(r);
+    faixas.fill(0);
+    for (let i = 0; i < escuros.length; i += 2) {
+      const yr = Math.round(escuros[i] * sin + escuros[i + 1] * cos + h);
+      if (yr >= 0 && yr < faixas.length) faixas[yr]++;
+    }
+    let nota = 0;
+    for (const f of faixas) nota += f * f;
+    if (nota > melhorNota) { melhorNota = nota; melhor = ang; }
+  }
+  return melhor;
+}
+
+// Preto e branco com limiar local (média da vizinhança): aguenta reflexo e sombra na mesma foto.
+function binarizar(src) {
+  const w = src.width, h = src.height;
+  const dados = src.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h);
+  const p = dados.data;
+  // imagem integral para calcular a média de cada janela rapidamente
+  const integral = new Float64Array((w + 1) * (h + 1));
+  for (let y = 0; y < h; y++) {
+    let soma = 0;
+    for (let x = 0; x < w; x++) {
+      soma += p[(y * w + x) * 4];
+      integral[(y + 1) * (w + 1) + x + 1] = integral[y * (w + 1) + x + 1] + soma;
+    }
+  }
+  const raio = Math.max(8, Math.round(Math.min(w, h) / 40));
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - raio), y1 = Math.min(h, y + raio + 1);
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, x - raio), x1 = Math.min(w, x + raio + 1);
+      const area = (x1 - x0) * (y1 - y0);
+      const s = integral[y1 * (w + 1) + x1] - integral[y0 * (w + 1) + x1] - integral[y1 * (w + 1) + x0] + integral[y0 * (w + 1) + x0];
+      const i = (y * w + x) * 4;
+      // 0.78: mais agressivo que isso engrossa as letras e elas grudam (medido nas fotos de teste)
+      const v = p[i] * area < s * 0.78 ? 0 : 255;
+      p[i] = p[i + 1] = p[i + 2] = v;
+    }
+  }
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  c.getContext('2d').putImageData(dados, 0, 0);
+  return c;
+}
+
+// ---------- recortar / girar ----------
+const rec = { indice: -1, img: null, girada: null, escala: 1, sel: null, inicio: null };
+async function abrirRecorte(i) {
+  const f = fotos[i];
+  if (!f) return;
+  rec.indice = i;
+  const bmp = await createImageBitmap(f.arquivo);
+  rec.escala = Math.min(1, 1400 / Math.max(bmp.width, bmp.height)); // prévia leve
+  rec.img = bmp;
+  rec.giro = f.giro;
+  $('#r-incl').value = f.inclinacao;
+  rec.sel = f.recorte ? { ...f.recorte } : null;
+  $('#recorte').hidden = false;
+  document.body.style.overflow = 'hidden';
+  desenharRecorte();
+}
+function desenharRecorte() {
+  rec.girada = girar(rec.img, rec.giro, Number($('#r-incl').value), rec.escala);
+  const cv = $('#r-canvas');
+  cv.width = rec.girada.width;
+  cv.height = rec.girada.height;
+  const x = cv.getContext('2d');
+  x.drawImage(rec.girada, 0, 0);
+  // linhas-guia para ajudar a endireitar
+  x.strokeStyle = 'rgba(31,111,235,.35)';
+  x.lineWidth = Math.max(1, cv.width / 600);
+  for (let k = 1; k < 8; k++) { x.beginPath(); x.moveTo(0, cv.height * k / 8); x.lineTo(cv.width, cv.height * k / 8); x.stroke(); }
+  if (rec.sel) {
+    const s = rec.sel;
+    x.fillStyle = 'rgba(0,0,0,.55)';
+    x.fillRect(0, 0, cv.width, s.y * cv.height);
+    x.fillRect(0, (s.y + s.h) * cv.height, cv.width, cv.height);
+    x.fillRect(0, s.y * cv.height, s.x * cv.width, s.h * cv.height);
+    x.fillRect((s.x + s.w) * cv.width, s.y * cv.height, cv.width, s.h * cv.height);
+    x.strokeStyle = '#1f6feb';
+    x.lineWidth = Math.max(2, cv.width / 300);
+    x.strokeRect(s.x * cv.width, s.y * cv.height, s.w * cv.width, s.h * cv.height);
+  }
+}
+function pontoNoCanvas(e) {
+  const r = $('#r-canvas').getBoundingClientRect();
+  return { x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) };
+}
+$('#r-canvas').addEventListener('pointerdown', e => {
+  e.preventDefault();
+  try { $('#r-canvas').setPointerCapture(e.pointerId); } catch {}
+  rec.inicio = pontoNoCanvas(e);
+});
+$('#r-canvas').addEventListener('pointermove', e => {
+  if (!rec.inicio) return;
+  const p = pontoNoCanvas(e), a = rec.inicio;
+  rec.sel = { x: Math.min(a.x, p.x), y: Math.min(a.y, p.y), w: Math.abs(p.x - a.x), h: Math.abs(p.y - a.y) };
+  desenharRecorte();
+});
+$('#r-canvas').addEventListener('pointerup', () => {
+  rec.inicio = null;
+  if (rec.sel && (rec.sel.w < 0.03 || rec.sel.h < 0.03)) { rec.sel = null; desenharRecorte(); }
+});
+$('#r-girar-esq').onclick = () => { rec.giro = (rec.giro + 3) % 4; rec.sel = null; desenharRecorte(); };
+$('#r-girar-dir').onclick = () => { rec.giro = (rec.giro + 1) % 4; rec.sel = null; desenharRecorte(); };
+$('#r-incl').oninput = () => { rec.sel = null; desenharRecorte(); };
+function fecharRecorte(salvar, inteira = false) {
+  const f = fotos[rec.indice];
+  if (salvar && f) {
+    f.giro = rec.giro;
+    f.inclinacao = Number($('#r-incl').value);
+    f.recorte = inteira ? null : rec.sel;
+  }
+  $('#recorte').hidden = true;
+  document.body.style.overflow = '';
+  rec.img?.close?.();
+  rec.img = null;
+  renderFotos();
+}
+$('#r-ok').onclick = () => fecharRecorte(true);
+$('#r-tudo').onclick = () => fecharRecorte(true, true);
+$('#r-cancelar').onclick = () => fecharRecorte(false);
 
 // O worker é criado uma vez só; criar já baixa (e guarda) o leitor e o idioma para uso offline.
 let workerPromise = null;
@@ -70,12 +249,58 @@ function obterWorker() {
     workerPromise = Tesseract.createWorker('por+eng', 1, {
       logger: m => { if (m.status === 'recognizing text') $('#progresso').textContent = `Lendo… ${Math.round(m.progress * 100)}%`; }
     }).then(async w => {
-      await w.setParameters({ preserve_interword_spaces: '1' });
+      await w.setParameters({ preserve_interword_spaces: '1', user_defined_dpi: '300' });
       return w;
     });
     workerPromise.catch(() => { workerPromise = null; });
   }
   return workerPromise;
+}
+
+// Linha que começa com um código tipo FB1, F12, SB 3, R1.
+const RE_CODIGO = /^([A-Za-z]{1,4})\s?[-.]?\s?([\dOolI]{1,3}[a-z]?)(?![A-Za-z])/;
+const temCodigo = t => { const m = t.trim().match(RE_CODIGO); return !!m && /\d/.test(m[2]); };
+
+// Lê uma imagem num modo (psm) e devolve as linhas com a confiança de cada uma.
+async function lerLinhas(worker, img, psm) {
+  await worker.setParameters({ tessedit_pageseg_mode: psm });
+  const { data } = await worker.recognize(img, {}, { blocks: true, text: true });
+  const linhas = (data.blocks || []).flatMap(b => b.paragraphs.flatMap(p => p.lines))
+    .map(l => ({ texto: l.text.replace(/\s+/g, ' ').trim(), conf: l.confidence }))
+    .filter(l => l.texto);
+  return linhas.length ? linhas : data.text.split('\n').map(t => ({ texto: t.trim(), conf: data.confidence })).filter(l => l.texto);
+}
+
+// Fica com o que parece texto de verdade: linhas com código, ou linhas lidas com boa confiança.
+function filtrarLinhas(linhas, manterDuvidosas) {
+  return linhas.filter(l => {
+    if ((l.texto.match(/[A-Za-zÀ-ú0-9]/g) || []).length < 2) return false;
+    if (manterDuvidosas) return true;
+    return temCodigo(l.texto) ? l.conf >= 30 : l.conf >= 65;
+  });
+}
+// Nota de uma leitura = quantos fusíveis completos ela rende (código certo + amperagem), mais um pouco pela confiança.
+function pontuar(linhas) {
+  const itens = parseTexto(linhas.map(l => l.texto).join('\n'));
+  const nota = itens.reduce((s, i) => s + (i.amperagem ? (i.obs ? 6 : 10) : 3), 0);
+  return nota + (linhas.length ? linhas.reduce((s, l) => s + l.conf, 0) / linhas.length / 20 : 0);
+}
+
+// Automático: tenta cinza e preto-e-branco em modos diferentes e fica com a leitura que achou mais códigos.
+async function lerFoto(worker, foto, modo, manterDuvidosas, progresso) {
+  const cinza = await prepararImagem(foto);
+  const tentativas = modo === 'auto'
+    ? [['4', () => binarizar(cinza)], ['6', () => cinza], ['11', () => binarizar(cinza)]]
+    : [[modo, () => cinza]];
+  let melhor = null;
+  for (let t = 0; t < tentativas.length; t++) {
+    progresso(t + 1, tentativas.length);
+    const [psm, img] = tentativas[t];
+    const linhas = filtrarLinhas(await lerLinhas(worker, img(), psm), manterDuvidosas);
+    const nota = pontuar(linhas);
+    if (!melhor || nota > melhor.nota) melhor = { nota, linhas };
+  }
+  return melhor.linhas.map(l => l.texto).join('\n');
 }
 
 $('#b-ler').onclick = async () => {
@@ -89,13 +314,13 @@ $('#b-ler').onclick = async () => {
     const worker = await obterWorker();
     const textos = [];
     for (let i = 0; i < fotos.length; i++) {
-      prog.textContent = `Foto ${i + 1}/${fotos.length}…`;
-      const { data } = await worker.recognize(await prepararImagem(fotos[i].arquivo));
-      textos.push(data.text.trim());
+      textos.push(await lerFoto(worker, fotos[i], $('#f-modo').value, $('#f-duvidosas').checked,
+        (t, n) => prog.textContent = `Foto ${i + 1}/${fotos.length}` + (n > 1 ? ` · tentativa ${t}/${n}…` : '…')));
     }
-    const atual = $('#f-texto').value.trim();
-    $('#f-texto').value = (atual ? atual + '\n' : '') + textos.join('\n');
-    prog.textContent = 'Pronto. Confira o texto e clique em Converter.';
+    acrescentarTexto(textos.join('\n'));
+    const n = converterTexto();
+    prog.textContent = n ? 'Pronto. Confira os itens; se corrigir o texto, toque em Converter de novo.'
+      : 'Não achei códigos. Tente recortar só a tabela, ou mude o modo de leitura.';
   } catch (e) {
     console.error(e);
     prog.textContent = 'Erro ao ler: ' + e.message;
@@ -105,43 +330,161 @@ $('#b-ler').onclick = async () => {
 };
 
 // ---------- texto → itens ----------
-// Aceita linhas como "FB1 Fusível principal 40A", "F12 - Ar condicionado (10A)", "SB 3: Buzina 15 A".
-// O OCR costuma trocar 1 por l/I e 0 por O nos números; corrigimos no código.
+// Aceita linhas como "FB1 Fusível principal 40A", "F12 - Ar condicionado (10A)", "SB 3: Buzina 15 A",
+// tabela "F1 10 Luz de freio", e texto vindo coluna por coluna (Google Lens): todos os códigos, depois
+// as amperagens, depois as descrições.
+const AMPS_PADRAO = [1, 2, 3, 4, 5, 7.5, 10, 15, 20, 25, 30, 35, 40, 50, 60, 70, 80, 100, 125, 150, 175, 200];
+// Código colado ou com hífen/ponto: F1, FB12, SB-3. Com espaço ("Fo 75") é ruído do leitor, não código.
+const RE_LINHA_CODIGO = /^([A-Za-z]{1,3})[-.]?([\dOolIi]{1,3}[a-z]?)(?![A-Za-z0-9])\s*[-–—:.=)]*\s*(.*)$/;
+const RE_SO_AMP = /^([\dSsOo]{1,3}(?:[.,]\d)?)\s?A?$/i;
+const RE_CABECALHO = /^(n[ºo°.]?|n[uú]mero|fus[ií]ve(l|is)|amp\.?|amperagem|a|fun[cç][aã]o|descri[cç][aã]o|circuito|item|c[oó]digo|nome|prote[cç][aã]o|aplica[cç][aã]o|-)$/i;
+
+// O leitor troca letras por números parecidos: S→5, O→0, l/I→1. "75" (que não existe) vira 7.5.
+function normalizarAmp(v) {
+  const s = String(v).replace(',', '.').replace(/[Ss]/g, '5').replace(/[Oo]/g, '0').replace(/[lIi|]/g, '1');
+  let n = Number(s);
+  if (!isFinite(n) || n <= 0) return '';
+  if (!AMPS_PADRAO.includes(n) && AMPS_PADRAO.includes(n / 10)) n = n / 10;
+  return String(n);
+}
+const numeroCodigo = s => s.replace(/[Oo]/g, '0').replace(/[lIi]/g, '1');
+const limparDescricao = s => s.replace(/\s+/g, ' ').replace(/^[-–—:.,;\s]+|[-–—:.,;\s]+$/g, '');
+const ehCabecalho = l => l.split(/[\s/]+/).every(t => RE_CABECALHO.test(t));
+
+// Separa amperagem e descrição do resto da linha.
+function separarAmp(resto) {
+  const a = resto.match(/\(?\b([\dSsOo]{1,3}(?:[.,]\d)?)\s?[Aa]\b\)?/)              // "10A", "SA", "75a", "(15 A)"
+    || resto.match(/^([\dOoSs]{1,3}(?:[.,]\d)?)\s+(?=\D)/);                        // tabela: "10 Luz de freio", "4O …"
+  if (a && /\d|^[Ss]$/.test(a[1])) {
+    const amperagem = normalizarAmp(a[1]);
+    if (amperagem) return { amperagem, descricao: limparDescricao(resto.replace(a[0], ' ')) };
+  }
+  return { amperagem: '', descricao: limparDescricao(resto) };
+}
+
 function parseTexto(txt) {
+  const linhas = txt.split(/\r?\n/).map(l => l.replace(/[|_[\]{}]/g, ' ').replace(/\s+/g, ' ').trim())
+    .filter(l => l && !ehCabecalho(l));
+  return corrigirSequencia(porColunas(linhas) || porLinhas(linhas));
+}
+
+// aprox: o número veio de letras trocadas ("Fi" → F1, "Fo" → F0); a sequência pode corrigir depois.
+function lerCodigo(linha) {
+  const m = linha.match(RE_LINHA_CODIGO);
+  if (!m || !/\d/.test(numeroCodigo(m[2]))) return null;
+  return { codigo: (m[1] + numeroCodigo(m[2])).toUpperCase(), resto: m[3], aprox: !/^\d+[a-z]?$/.test(m[2]) };
+}
+
+// Uma linha por fusível: "F1 10A Luz de freio".
+function porLinhas(linhas) {
   const itens = [];
-  for (const bruta of txt.split(/\r?\n/)) {
-    const linha = bruta.replace(/[|_]/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!linha) continue;
-    const m = linha.match(/^([A-Za-z]{1,4})\s?[-.]?\s?([\dOolI]{1,3}[a-z]?)(?![A-Za-z])\s*[-–—:.=)]*\s*(.*)$/);
-    if (!m || !/\d/.test(m[2])) {
-      // linha sem código: provavelmente continuação da descrição anterior
-      if (itens.length) itens[itens.length - 1].descricao += ' ' + linha;
+  for (const linha of linhas) {
+    const c = lerCodigo(linha);
+    if (c && c.aprox) { itens.push({ codigo: null, bruto: c.codigo, palpite: c.codigo, ...separarAmp(c.resto), obs: '' }); continue; }
+    if (c) { itens.push({ codigo: c.codigo, ...separarAmp(c.resto), obs: '' }); continue; }
+    // começa com algo curto parecido com código e logo depois vem uma amperagem: "Fa 10 Farol", "FS 10A …"
+    const q = linha.match(/^([A-Za-z][A-Za-z0-9é]{0,3})\s+(\S.*)$/);
+    if (q && /^[\dSsOo]{1,3}([.,]\d)?\s?A?\b/.test(q[2]) && /\d/.test(q[2].split(' ')[0] + q[2].split(' ')[1])) {
+      itens.push({ codigo: null, bruto: q[1], ...separarAmp(q[2]), obs: '' });
       continue;
     }
-    const num = m[2].replace(/[Oo]/g, '0').replace(/[lI]/g, '1');
-    let resto = m[3];
-    let amperagem = '';
-    const a = resto.match(/\(?\b(\d{1,3}(?:[.,]\d)?)\s?A\b\)?/i);
-    if (a) { amperagem = a[1].replace(',', '.'); resto = resto.replace(a[0], ' '); }
-    itens.push({
-      codigo: (m[1] + num).toUpperCase(),
-      descricao: resto.replace(/\s+/g, ' ').replace(/^[-–—:.\s]+|[-–—:.\s]+$/g, ''),
-      amperagem,
-      obs: ''
-    });
+    // senão é continuação da descrição anterior (descrição quebrada em duas linhas)
+    if (itens.length) itens[itens.length - 1].descricao = limparDescricao(itens[itens.length - 1].descricao + ' ' + linha);
   }
   return itens;
 }
 
-$('#b-converter').onclick = () => {
+// Texto coluna por coluna: separa códigos, amperagens e descrições e junta pela ordem.
+function porColunas(linhas) {
+  const codigos = [], amps = [], descs = [];
+  let comTexto = 0;
+  for (const l of linhas) {
+    const c = lerCodigo(l);
+    if (c && !c.resto) codigos.push(c.codigo);
+    else if (c && RE_SO_AMP.test(c.resto)) { codigos.push(c.codigo); amps.push(normalizarAmp(c.resto.replace(/a$/i, ''))); }
+    else if (c) comTexto++;
+    else if (RE_SO_AMP.test(l) && /\d|^[Ss]A?$/i.test(l)) amps.push(normalizarAmp(l.replace(/a$/i, '')));
+    else descs.push(l);
+  }
+  if (codigos.length < 3 || comTexto >= codigos.length) return null;
+  const conferir = amps.length !== codigos.length || descs.length !== codigos.length;
+  return codigos.map((codigo, i) => ({
+    codigo,
+    amperagem: amps[i] || '',
+    descricao: limparDescricao(descs[i] || ''),
+    obs: conferir ? 'conferir (colunas com tamanhos diferentes)' : ''
+  }));
+}
+
+// Códigos ilegíveis ("Fa", "FS") são deduzidos pelos vizinhos: entre F3 e F5 só pode ser F4.
+function corrigirSequencia(itens) {
+  const partes = c => { const m = c && c.match(/^([A-Z]+)(\d+)$/); return m ? { p: m[1], n: Number(m[2]) } : null; };
+  const res = [];
+  itens.forEach((it, i) => {
+    if (it.codigo) return res.push(it);
+    // o anterior já corrigido ajuda o próximo: "Fa", "FS" seguidos viram F4, F5
+    const ant = partes(res.at(-1)?.codigo);
+    const prox = partes(itens.slice(i + 1).find(x => x.codigo)?.codigo);
+    const { bruto, palpite, ...resto } = it;
+    const esperado = ant ? ant.p + (ant.n + 1) : prox ? prox.p + (prox.n - 1) : null;
+    if (ant && prox && ant.p === prox.p && prox.n - ant.n === 2) res.push({ ...resto, codigo: esperado });
+    else if (palpite && palpite === esperado) res.push({ ...resto, codigo: palpite });
+    else if (palpite) res.push({ ...resto, codigo: palpite, obs: 'conferir código' });
+    else if (esperado && bruto.toUpperCase().startsWith((ant || prox).p)) res.push({ ...resto, codigo: esperado, obs: 'conferir código' });
+    else res.push({ ...resto, codigo: bruto.toUpperCase() + '?', obs: 'conferir código' });
+  });
+  return res;
+}
+
+// Converte o texto e junta com a tabela: código novo entra no fim; código que já existe é atualizado
+// (assim dá para corrigir o texto e converter de novo), mantendo a posição na caixa.
+function converterTexto() {
   const novos = parseTexto($('#f-texto').value);
-  if (!novos.length) return aviso('Não achei linhas com código (ex: FB1, F12).');
-  const existentes = lerTabela().filter(i => i.codigo || i.descricao);
-  const codigos = new Set(existentes.map(i => i.codigo));
-  const somar = novos.filter(i => !codigos.has(i.codigo));
-  renderTabela([...existentes, ...somar]);
-  aviso(`${somar.length} itens adicionados` + (novos.length > somar.length ? ` (${novos.length - somar.length} códigos repetidos ignorados)` : ''));
+  if (!novos.length) { aviso('Não achei linhas com código (ex: FB1, F12).'); return 0; }
+  const itens = lerTabela().filter(i => i.codigo || i.descricao);
+  let adicionados = 0, atualizados = 0;
+  for (const n of novos) {
+    const ex = itens.find(i => i.codigo === n.codigo);
+    if (!ex) { itens.push(n); adicionados++; }
+    else if (ex.descricao !== n.descricao || ex.amperagem !== n.amperagem) {
+      Object.assign(ex, { descricao: n.descricao, amperagem: n.amperagem, obs: n.obs || ex.obs });
+      atualizados++;
+    }
+  }
+  renderTabela(itens);
+  const duvidas = novos.filter(n => n.obs).length;
+  aviso(`${adicionados} adicionados` + (atualizados ? `, ${atualizados} atualizados` : '') + (duvidas ? ` · ${duvidas} para conferir` : ''));
+  return novos.length;
+}
+$('#b-converter').onclick = converterTexto;
+
+function acrescentarTexto(txt) {
+  const atual = $('#f-texto').value.trim();
+  $('#f-texto').value = (atual ? atual + '\n' : '') + txt.trim();
+}
+$('#b-colar').onclick = async () => {
+  try {
+    const txt = await navigator.clipboard.readText();
+    if (!txt.trim()) return aviso('A área de transferência está vazia.');
+    acrescentarTexto(txt);
+    converterTexto();
+  } catch {
+    $('#f-texto').focus();
+    aviso('Toque e segure na caixa de texto e escolha Colar.');
+  }
 };
+
+// Texto compartilhado de outro app (Google Lens → Compartilhar → Diagramas) chega como ?texto=…
+function receberCompartilhado() {
+  const q = new URLSearchParams(location.search);
+  const txt = [q.get('titulo'), q.get('texto'), q.get('link')].filter(Boolean).join('\n');
+  if (!txt.trim()) return;
+  history.replaceState(null, '', location.pathname); // limpa a URL para não repetir ao recarregar
+  abrirAba('novo');
+  acrescentarTexto(txt);
+  converterTexto();
+  $('#f-texto').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
 
 // ---------- tabela de itens ----------
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -780,3 +1123,4 @@ document.body.classList.toggle('fixado', fixado());
 atualizarSugestoes();
 renderAnosVeiculo();
 renderPosicoes();
+receberCompartilhado();
