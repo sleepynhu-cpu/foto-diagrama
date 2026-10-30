@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Foto → Diagrama</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>Foto → Diagrama</h1>
+  <nav>
+    <button data-tab="novo" class="ativo">Novo</button>
+    <button data-tab="biblioteca">Biblioteca</button>
+    <button data-tab="comparar">Comparar anos</button>
+  </nav>
+</header>
+
+<main>
+  <!-- NOVO / EDITAR -->
+  <section id="tab-novo" class="tab ativo">
+    <h2 id="titulo-form">Novo diagrama</h2>
+
+    <fieldset>
+      <legend>1. De onde é esse diagrama</legend>
+      <div class="linha">
+        <label class="check"><input id="f-fixar" type="checkbox"> 📌 Fixar este veículo</label>
+        <label class="check">pular de <input id="f-passo" class="curto" type="number" inputmode="numeric" value="5" min="1"> anos</label>
+        <select id="f-direcao" class="curto-select">
+          <option value="-1">para trás (2025 → 2020)</option>
+          <option value="1">para frente (2010 → 2015)</option>
+        </select>
+      </div>
+      <div id="anos-veiculo"></div>
+      <div class="grade">
+        <label>Marca <input id="f-marca" placeholder="Volkswagen" list="lista-marcas"></label>
+        <label>Modelo <input id="f-modelo" placeholder="Saveiro" list="lista-modelos"></label>
+        <label>Ano <input id="f-ano" type="number" inputmode="numeric" placeholder="2025"></label>
+        <label>Versão / motor <input id="f-versao" placeholder="Robust 1.6 MSI"></label>
+        <label>Tipo de diagrama
+          <select id="f-tipo">
+            <option>Caixa de fusíveis</option>
+            <option>Caixa de relés</option>
+            <option>Conector</option>
+            <option>Pinagem de módulo</option>
+            <option>Outro</option>
+          </select>
+        </label>
+        <label>Local <input id="f-local" placeholder="Painel lado motorista" list="lista-locais"></label>
+      </div>
+      <label>Fonte <input id="f-fonte" placeholder="Manual do proprietário, tampa da caixa, ElsaWin…"></label>
+      <label>Observações <textarea id="f-notas" rows="2"></textarea></label>
+      <datalist id="lista-marcas"></datalist>
+      <datalist id="lista-modelos"></datalist>
+      <datalist id="lista-locais"></datalist>
+    </fieldset>
+
+    <fieldset>
+      <legend>2. Fotos <small>(só para ler o texto, não são salvas)</small></legend>
+      <div class="linha">
+        <label class="botao">📷 Tirar foto
+          <input id="f-camera" type="file" accept="image/*" capture="environment" hidden>
+        </label>
+        <label class="botao secundario">🖼️ Escolher da galeria
+          <input id="f-galeria" type="file" accept="image/*" multiple hidden>
+        </label>
+      </div>
+      <div id="fotos" class="fotos"></div>
+      <div class="linha">
+        <button id="b-ler">🔍 Ler texto das fotos</button>
+        <span id="progresso"></span>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>3. Texto lido (corrija se precisar)</legend>
+      <textarea id="f-texto" rows="8" placeholder="FB1 Fusível principal 40A&#10;FB2 Ar condicionado 30A"></textarea>
+      <button id="b-converter">⬇️ Converter texto em itens</button>
+    </fieldset>
+
+    <fieldset>
+      <legend>4. Itens</legend>
+      <div class="rolagem">
+        <table id="tabela-itens">
+          <thead><tr><th>Código</th><th>Descrição</th><th>Amp.</th><th>Obs.</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <button id="b-add-linha" class="secundario">+ Linha</button>
+    </fieldset>
+
+    <fieldset>
+      <legend>5. Posições na caixa <small>(opcional)</small></legend>
+      <p class="dica">Toque num código e depois no lugar dele na grade (o próximo já fica selecionado). Toque num fusível já colocado para mover, mudar o tamanho ou tirar.</p>
+      <div class="linha">
+        <label class="check">Linhas <input id="p-linhas" class="curto" type="number" inputmode="numeric" value="4" min="1" max="30"></label>
+        <label class="check">Colunas <input id="p-colunas" class="curto" type="number" inputmode="numeric" value="6" min="1" max="30"></label>
+        <button id="p-ref" class="secundario">Mostrar foto</button>
+      </div>
+      <div id="p-codigos" class="anos"></div>
+      <div id="p-sel" class="linha"></div>
+      <img id="p-foto" alt="Foto de referência" hidden>
+      <div class="rolagem"><div id="p-grade"></div></div>
+      <div class="linha">
+        <button id="p-svg" class="secundario">🖼️ Ver imagem SVG</button>
+        <button id="p-baixar" class="secundario">Baixar SVG</button>
+      </div>
+      <div id="p-preview" class="rolagem"></div>
+    </fieldset>
+
+    <div class="linha fixo">
+      <button id="b-salvar">💾 Salvar</button>
+      <button id="b-limpar" class="secundario">Limpar / novo</button>
+    </div>
+  </section>
+
+  <!-- BIBLIOTECA -->
+  <section id="tab-biblioteca" class="tab">
+    <h2>Biblioteca</h2>
+    <div class="linha">
+      <input id="busca" placeholder="Buscar modelo, ano, código…">
+    </div>
+    <div class="linha">
+      <button id="b-exp-js">Exportar .js</button>
+      <button id="b-exp-json" class="secundario">Exportar .json</button>
+      <label class="botao secundario">Importar .json
+        <input id="f-importar" type="file" accept=".json,application/json" hidden>
+      </label>
+    </div>
+    <div id="lista"></div>
+  </section>
+
+  <!-- COMPARAR -->
+  <section id="tab-comparar" class="tab">
+    <h2>Comparar anos</h2>
+    <p class="dica">Escolha um grupo (mesma marca + modelo + tipo + local). Cada coluna é um ano; células coloridas mostram onde algo mudou em relação ao ano anterior.</p>
+    <div class="linha">
+      <select id="c-grupo"></select>
+      <label class="check"><input id="c-so-mudancas" type="checkbox"> Só linhas que mudaram</label>
+    </div>
+    <div id="c-resumo"></div>
+    <div class="rolagem"><table id="c-matriz"></table></div>
+    <div class="legenda">
+      <span class="novo">novo</span>
+      <span class="mudou">mudou</span>
+      <span class="removido">removido</span>
+    </div>
+  </section>
+</main>
+
+<div id="aviso"></div>
+<script src="app.js"></script>
+</body>
+</html>
