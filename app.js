@@ -432,6 +432,93 @@ async function oferecerIaDoPc() {
   sel.value = 'ollama';
 }
 
+// ---------- exemplos para treinar a IA do PC ----------
+// Só no computador (navegador que deixa gravar numa pasta). Ao salvar um diagrama, cada foto lida vira
+// um exemplo na pasta que você escolheu: o recorte (nunca a foto inteira) + o texto certo da tabela.
+// A pasta é lembrada no navegador (IndexedDB); os arquivos não saem do PC.
+let pastaTreino = null;
+const banco = () => new Promise((ok, erro) => {
+  const r = indexedDB.open('treino', 1);
+  r.onupgradeneeded = () => r.result.createObjectStore('cfg');
+  r.onsuccess = () => ok(r.result);
+  r.onerror = () => erro(r.error);
+});
+async function cfgTreino(valor) {
+  const db = await banco();
+  return new Promise((ok, erro) => {
+    const t = db.transaction('cfg', valor === undefined ? 'readonly' : 'readwrite').objectStore('cfg');
+    const r = valor === undefined ? t.get('pasta') : valor ? t.put(valor, 'pasta') : t.delete('pasta');
+    r.onsuccess = () => ok(r.result);
+    r.onerror = () => erro(r.error);
+  });
+}
+const contarTreino = (mais = 0) => {
+  const n = (Number(localStorage.getItem('treino-n')) || 0) + mais;
+  try { localStorage.setItem('treino-n', n); } catch {}
+  return n;
+};
+function renderTreino() {
+  $('#b-treino').textContent = pastaTreino ? '🎓 Parar de guardar exemplos' : '🎓 Guardar exemplos para treinar a IA';
+  $('#treino-status').textContent = pastaTreino
+    ? `pasta “${pastaTreino.name}” · ${contarTreino()} exemplos guardados · cada diagrama salvo vira exemplo`
+    : 'recorte + texto certo, numa pasta do PC, para treinar a IA';
+}
+async function iniciarTreino() {
+  if (!window.showDirectoryPicker) return; // celular: nada é guardado
+  $('#treino').hidden = false;
+  try { pastaTreino = await cfgTreino() || null; } catch {}
+  renderTreino();
+}
+$('#b-treino').onclick = async () => {
+  if (pastaTreino) {
+    if (!confirm('Parar de guardar exemplos? Os que já estão na pasta continuam lá.')) return;
+    pastaTreino = null;
+    await cfgTreino(null);
+    return renderTreino();
+  }
+  try {
+    pastaTreino = await showDirectoryPicker({ id: 'treino', mode: 'readwrite', startIn: 'documents' });
+    await cfgTreino(pastaTreino);
+    aviso('Pronto: ao salvar, os recortes lidos viram exemplos de treino.');
+  } catch {}
+  renderTreino();
+};
+
+function guardarExemplos(lista, d) {
+  const pasta = pastaTreino;
+  const lidas = lista.filter(f => f.lida && f.codigos?.length);
+  if (!pasta || !lidas.length) return;
+  // pede a permissão já, enquanto o clique em Salvar ainda vale
+  const permissao = pasta.requestPermission({ mode: 'readwrite' });
+  (async () => {
+    if (await permissao !== 'granted') return aviso('Sem permissão na pasta de treino; exemplos não guardados.');
+    const base = new Date().toISOString().replace(/\D/g, '').slice(0, 14);
+    let n = 0;
+    for (const [k, f] of lidas.entries()) {
+      // com uma foto só, o certo é a tabela inteira (inclusive o que a IA pulou);
+      // com várias, só os códigos que saíram daquela foto
+      const itens = (lidas.length === 1 ? d.itens : d.itens.filter(i => f.codigos.includes(i.codigo)))
+        .map(({ codigo, amperagem, descricao }) => ({ codigo, amperagem, descricao }));
+      if (!itens.length) continue;
+      const nome = `${base}-${[d.marca, d.modelo, d.ano].filter(Boolean).join('-').replace(/[^\w-]+/g, '_')}-${k + 1}`;
+      const grava = async (arq, conteudo) => {
+        const w = await (await pasta.getFileHandle(arq, { create: true })).createWritable();
+        await w.write(conteudo);
+        await w.close();
+      };
+      try {
+        await grava(nome + '.jpg', await recorteColorido(f, 1600)); // o mesmo recorte que a IA vê
+        await grava(nome + '.json', JSON.stringify({
+          marca: d.marca, modelo: d.modelo, ano: d.ano, tipo: d.tipo, local: d.local,
+          lido: f.lidoTexto || '', resposta: { itens }
+        }, null, 2));
+        n++;
+      } catch (e) { console.error(e); }
+    }
+    if (n) { contarTreino(n); renderTreino(); }
+  })();
+}
+
 // Fila: as fotos são lidas uma de cada vez, em segundo plano; cada uma já joga os itens na tabela.
 let fila = Promise.resolve();
 let naFila = 0;
@@ -457,6 +544,8 @@ function enfileirarLeitura(foto) {
         renderFotos();
       });
       acrescentarTexto(txt);
+      foto.lidoTexto = txt;
+      foto.codigos = parseTexto(txt).map(i => i.codigo);
       const n = txt.trim() ? converterTexto(txt) : 0;
       foto.lida = true;
       foto.estado = n ? `✔ ${n} itens` : '⚠ nada lido';
@@ -984,6 +1073,7 @@ $('#b-salvar').onclick = () => {
   diagramas = antigo ? diagramas.map(x => x.id === d.id ? d : x) : [...diagramas, d];
   if (gravar(diagramas)) {
     const aprendeu = aprenderCorrecoes(tabela);
+    guardarExemplos(fotos, d);
     aviso(`Salvo: ${d.modelo} ${d.ano} (${d.itens.length} itens)` + (aprendeu ? ` · 🧠 aprendi ${aprendeu} correções` : ''));
     limparForm();
     if (fixado()) $('#f-ano').value = proximoAno(d.ano) ?? '';
@@ -1593,3 +1683,4 @@ renderPosicoes();
 restaurarRascunho();
 receberCompartilhado();
 oferecerIaDoPc();
+iniciarTreino();

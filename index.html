@@ -61,7 +61,7 @@
     </fieldset>
 
     <fieldset>
-      <legend>2. Fotos <small>(só para ler o texto, não são salvas)</small></legend>
+      <legend>2. Fotos <small>(só para ler o texto, não são salvas — só o recorte, se você ligar o treino no PC)</small></legend>
       <div class="linha">
         <label class="botao">📷 Tirar foto
           <input id="f-camera" type="file" accept="image/*" capture="environment" hidden>
@@ -83,6 +83,10 @@
       <div class="linha">
         <button id="b-ler" class="secundario">🔍 Ler fotos que faltam</button>
         <span id="progresso"></span>
+      </div>
+      <div id="treino" class="linha" hidden>
+        <button id="b-treino" class="secundario">🎓 Guardar exemplos para treinar a IA</button>
+        <span id="treino-status" class="dica"></span>
       </div>
     </fieldset>
 
