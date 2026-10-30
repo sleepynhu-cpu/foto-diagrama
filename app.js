@@ -761,7 +761,7 @@ async function prepararOffline() {
   const st = $('#status-offline');
   if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
   try {
-    await navigator.serviceWorker.register('sw.js');
+    await navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' });
     await navigator.serviceWorker.ready;
     navigator.storage?.persist?.(); // pede para o navegador não apagar os dados salvos
     if (!window.Tesseract) { st.textContent = '⚠ sem leitor (abra com internet)'; return; }
